@@ -1,0 +1,45 @@
+logger:
+  type: local
+  name: copro-manager
+  env: local
+
+api:
+  scheme: http
+  host: 0.0.0.0
+  port: 8080
+  no_cache: true
+  cors:
+    allowed_methods:
+      - GET
+      - POST
+      - PUT
+      - PATCH
+      - DELETE
+      - OPTIONS
+    allowed_headers:
+      - "Authorization"
+      - "Content-Type"
+      - "X-Request-ID"
+    allow_credentials: true
+    max_age: 300s
+
+firestore:
+  project_id: copro-494909
+  # Database is literally named "default" (created without the canonical parens).
+  # The Go SDK takes this name via NewClientWithDatabase; the JS client passes
+  # it explicitly to getFirestore() in app/src/lib/firebase.ts.
+  database: default
+
+storage:
+  bucket: copro-manager-docs
+
+middlewares:
+  allow_bypass: false
+  bypass_auth_key: ""
+  # Global admin key gating the /admin/* endpoints. Empty disables admin entirely.
+  # Override per-machine via conf/local.yml; in production via Secret Manager → Cloud Run env.
+  admin_api_key: ""
+
+otel:
+  enabled: false
+  service_name: copro-manager-api

@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+# Local-dev helper for copro-manager.
+# Run from anywhere; the script always normalizes CWD to the repo root so
+# relative paths in .env (e.g. creds/dev.json) resolve correctly.
+#
+# Usage:
+#   scripts/dev <command> [args]
+#
+# Commands:
+#   run                                 Start the Go API (api/bin/app)
+#   seed --rdc-email X --1er-email Y    Seed Copro + 2 foyer accounts
+#                                       [--rdc-name N] [--1er-name N]
+#   help                                Show this help
+
+set -euo pipefail
+
+# ---- locate repo root ------------------------------------------------------
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+cd "${REPO_ROOT}"
+
+# ---- load .env -------------------------------------------------------------
+# Parse .env line-by-line (KEY=VALUE only) instead of `source` to avoid
+# executing command substitutions or arbitrary shell metacharacters from
+# values pasted by users.
+
+if [[ -f .env ]]; then
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    # Skip blanks and comments
+    [[ -z "${line}" || "${line}" =~ ^[[:space:]]*# ]] && continue
+    # Match KEY=VALUE; ignore anything that doesn't fit
+    if [[ "${line}" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+      key="${BASH_REMATCH[1]}"
+      val="${BASH_REMATCH[2]}"
+      # Strip a single pair of surrounding quotes if present
+      if [[ "${val}" =~ ^\"(.*)\"$ ]] || [[ "${val}" =~ ^\'(.*)\'$ ]]; then
+        val="${BASH_REMATCH[1]}"
+      fi
+      export "${key}=${val}"
+    fi
+  done < .env
+fi
+
+# ---- subcommands -----------------------------------------------------------
+
+cmd_help() {
+  cat <<'EOF'
+Local-dev helper for copro-manager.
+Run from anywhere; the script always normalizes CWD to the repo root so
+relative paths in .env (e.g. creds/dev.json) resolve correctly.
+
+Usage:
+  scripts/dev <command> [args]
+
+Commands:
+  run                                 Start the Go API (api/bin/app)
+  seed --rdc-email X --1er-email Y    Seed Copro + 2 foyer accounts
+                                      [--rdc-name N] [--1er-name N]
+  help                                Show this help
+EOF
+}
+
+cmd_run() {
+  # Honour CONFIG_FILE from .env (layered main.yml:local.yml by default) so
+  # per-machine overrides in api/conf/local.yml actually take effect.
+  export CONFIG_FILE="${CONFIG_FILE:-api/conf/main.yml:api/conf/local.yml}"
+  exec go run ./api/bin/app
+}
+
+cmd_seed() {
+  local rdc_email="" premier_email="" rdc_name="Foyer RDC" premier_name="Foyer 1er"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --rdc-email)    rdc_email="$2";     shift 2 ;;
+      --1er-email)    premier_email="$2"; shift 2 ;;
+      --rdc-name)     rdc_name="$2";      shift 2 ;;
+      --1er-name)     premier_name="$2";  shift 2 ;;
+      -h|--help)
+        echo "usage: scripts/dev seed --rdc-email <addr> --1er-email <addr> [--rdc-name <name>] [--1er-name <name>]"
+        return 0
+        ;;
+      *)
+        echo "seed: unknown flag $1" >&2
+        return 2
+        ;;
+    esac
+  done
+
+  if [[ -z "${rdc_email}" || -z "${premier_email}" ]]; then
+    echo "seed: --rdc-email and --1er-email are required" >&2
+    echo "usage: scripts/dev seed --rdc-email <addr> --1er-email <addr> [--rdc-name <name>] [--1er-name <name>]" >&2
+    return 2
+  fi
+
+  exec go run ./api/bin/seed \
+    --config api/conf/main.yml \
+    --rdc-email "${rdc_email}" \
+    --rdc-name "${rdc_name}" \
+    --1er-email "${premier_email}" \
+    --1er-name "${premier_name}"
+}
+
+# ---- dispatch --------------------------------------------------------------
+
+main() {
+  if [[ $# -eq 0 ]]; then
+    cmd_help
+    exit 0
+  fi
+
+  local cmd="$1"; shift
+  case "${cmd}" in
+    run)        cmd_run "$@" ;;
+    seed)       cmd_seed "$@" ;;
+    help|-h|--help) cmd_help ;;
+    *)
+      echo "unknown command: ${cmd}" >&2
+      cmd_help >&2
+      exit 2
+      ;;
+  esac
+}
+
+main "$@"

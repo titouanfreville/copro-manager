@@ -1,32 +1,67 @@
-# If you prefer the allow list template instead of the deny list, see community template:
-# https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
-#
-# Binaries for programs and plugins
+# Binaries
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
+api/bin/app/app
+api/bin/app/copro-api
+api/bin/seed/seed
 
-# Test binary, built with `go test -c`
+# Go test artifacts
 *.test
-
-# Code coverage profiles and other test artifacts
 *.out
 coverage.*
 *.coverprofile
 profile.cov
 
-# Dependency directories (remove the comment below to include it)
-# vendor/
-
-# Go workspace file
-go.work
+# Go workspace
 go.work.sum
 
-# env file
+# Environment
 .env
+.env.local
+.env.*.local
 
-# Editor/IDE
-# .idea/
-# .vscode/
+# Node / SvelteKit
+node_modules/
+app/.svelte-kit/
+app/build/
+app/.vite/
+app/dev-dist/
+
+# Terraform / OpenTofu — note: .terraform.lock.hcl IS committed for reproducibility
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+*.secret.tfvars
+terraform.tfvars
+crash.log
+crash.*.log
+
+# Firebase tooling
+.firebase/
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# BMad (config + outputs are local to the dev who runs bmad)
+_bmad/
+.bmad/
+
+# Service account JSON keys — local-dev only, never committed
+creds/
+*.serviceaccount.json
+
+# Local YAML overrides — layered on top of conf/main.yml via CONFIG_FILE
+api/conf/local.yml
+
+# Personal expense CSVs (used as import sources, not committed)
+data/*.csv
+private/*.csv

@@ -1,0 +1,45 @@
+name: Infra · PR checks
+
+on:
+  pull_request:
+    paths:
+      - "infra/**"
+      - ".github/workflows/infra-pr.yaml"
+  workflow_dispatch:
+
+concurrency:
+  group: infra-pr-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+
+    strategy:
+      matrix:
+        stack: [bootstrap, env]
+      fail-fast: false
+
+    defaults:
+      run:
+        working-directory: infra/terraform/${{ matrix.stack }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: 1.8.0
+
+      - name: tofu fmt
+        run: tofu fmt -check -recursive ../
+
+      - name: tofu init (no backend)
+        run: tofu init -backend=false
+
+      - name: tofu validate
+        run: tofu validate

@@ -1,0 +1,20 @@
+rules_version = '2';
+
+// copro-manager — Firestore security rules.
+//
+// All authenticated foyer members can read everything (single-copro,
+// two-foyer scope per AGENTS.md "locked decisions"). All writes go through
+// the Go API (Admin SDK, which bypasses these rules). The rules below
+// therefore only need to gate reads at the auth layer; client-side writes
+// are explicitly refused.
+//
+// Deploy with `infra/firebase/deploy-rules.sh` after editing.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
+  }
+}
