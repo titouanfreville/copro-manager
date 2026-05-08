@@ -72,6 +72,23 @@ type Expense struct {
 	Settled          bool             `json:"settled"`
 	SettledAt        *time.Time       `json:"settled_at,omitempty"`
 	Note             string           `json:"note,omitempty"`
-	CreatedAt        time.Time        `json:"created_at"`
-	UpdatedAt        time.Time        `json:"updated_at"`
+	// TemplateID is the ID of the template that minted this row, when
+	// applicable — empty for hand-typed expenses. Used to surface a
+	// "modèle" badge in the ledger and to keep generated rows traceable.
+	TemplateID string `json:"template_id,omitempty"`
+	// AmountPending marks a row whose amount has not yet been filled in
+	// (typically a scheduled cron-created row for an utility bill that
+	// hasn't arrived). Pending rows are excluded from the running balance,
+	// allow AmountCents == 0, and surface a "Montant à compléter" CTA.
+	// Cleared automatically when the user submits an Update with a valid
+	// (>0) amount.
+	AmountPending bool      `json:"amount_pending,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+	// Attachments live in the subcollection `expenses/{id}/attachments/{aid}`.
+	// They are loaded on demand via the AttachmentsStore (not embedded on the
+	// expense doc) so the cap stays atomic and the ledger row stays compact.
+	// This field exists only on the wire to surface attachments to the
+	// foyer-facing onSnapshot — populated by the adapter, never persisted.
+	Attachments []Attachment `json:"attachments,omitempty" firestore:"-"`
 }

@@ -32,6 +32,12 @@ firestore:
 
 storage:
   bucket: copro-manager-docs
+  # Service account email used to V4-sign upload/download URLs via the
+  # IAM Credentials API (the runtime SA has no downloadable key). Empty
+  # locally → the client will try the GCE metadata server and fail outside
+  # Cloud Run; set this in conf/local.yml for local dev. The user must
+  # have roles/iam.serviceAccountTokenCreator on the chosen SA.
+  signing_service_account: ""
 
 middlewares:
   allow_bypass: false

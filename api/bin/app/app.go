@@ -15,6 +15,7 @@ import (
 	coprosadapter "github.com/titouanfreville/copro-manager/api/src/adapters/copros"
 	expensesadapter "github.com/titouanfreville/copro-manager/api/src/adapters/expenses"
 	foyersadapter "github.com/titouanfreville/copro-manager/api/src/adapters/foyers"
+	templatesadapter "github.com/titouanfreville/copro-manager/api/src/adapters/templates"
 	usersadapter "github.com/titouanfreville/copro-manager/api/src/adapters/users"
 	"github.com/titouanfreville/copro-manager/api/src/core/config"
 	"github.com/titouanfreville/copro-manager/api/src/domain/interfaces"
@@ -23,6 +24,7 @@ import (
 	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/expenses"
 	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/foyers"
 	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/home"
+	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/templates"
 	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/users"
 	"github.com/titouanfreville/copro-manager/api/src/servers/api"
 	"github.com/titouanfreville/copro-manager/api/src/servers/api/middlewares"
@@ -62,9 +64,12 @@ func main() {
 				return firestore.NewClient(cfg.Firestore)
 			},
 
-			func(cfg *config.Config) (*storage.Client, error) {
-				return storage.NewClient(cfg.Storage)
-			},
+			fx.Annotate(
+				func(cfg *config.Config) (*storage.Client, error) {
+					return storage.NewClient(cfg.Storage)
+				},
+				fx.As(new(interfaces.StorageService)),
+			),
 
 			firebase.NewApp,
 			firebase.NewAuthClient,
@@ -75,6 +80,8 @@ func main() {
 			fx.Annotate(usersadapter.NewStore, fx.As(new(interfaces.UsersStore))),
 			fx.Annotate(categoriesadapter.NewStore, fx.As(new(interfaces.CategoriesStore))),
 			fx.Annotate(expensesadapter.NewStore, fx.As(new(interfaces.ExpensesStore))),
+			fx.Annotate(expensesadapter.NewAttachmentsStore, fx.As(new(interfaces.AttachmentsStore))),
+			fx.Annotate(templatesadapter.NewStore, fx.As(new(interfaces.TemplatesStore))),
 			fx.Annotate(authadapter.NewFirebaseProvisioner, fx.As(new(interfaces.AuthProvisioner))),
 
 			home.New,
@@ -83,6 +90,7 @@ func main() {
 			foyers.New,
 			categories.New,
 			expenses.New,
+			templates.New,
 			usecases.New,
 
 			func(cfg *config.Config, logger *uberzap.Logger, auth firebase.AuthClient) *middlewares.Middlewares {

@@ -10,6 +10,8 @@ import (
 
 	fs "cloud.google.com/go/firestore"
 	"google.golang.org/api/iterator"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/titouanfreville/copro-manager/api/src/domain/entities"
 	"github.com/titouanfreville/copro-manager/api/src/domain/interfaces"
@@ -33,8 +35,22 @@ type expenseDoc struct {
 	Settled          bool                      `firestore:"settled"`
 	SettledAt        *time.Time                `firestore:"settled_at,omitempty"`
 	Note             string                    `firestore:"note,omitempty"`
+	TemplateID       string                    `firestore:"template_id,omitempty"`
+	AmountPending    bool                      `firestore:"amount_pending,omitempty"`
 	CreatedAt        time.Time                 `firestore:"created_at"`
 	UpdatedAt        time.Time                 `firestore:"updated_at"`
+}
+
+// attachmentDoc is the on-disk shape of a single attachment. Lives in the
+// subcollection `expenses/{expenseID}/attachments/{attachmentID}`.
+type attachmentDoc struct {
+	ID               string    `firestore:"id"`
+	ObjectName       string    `firestore:"object_name"`
+	ContentType      string    `firestore:"content_type"`
+	SizeBytes        int64     `firestore:"size_bytes"`
+	OriginalFilename string    `firestore:"original_filename"`
+	UploadedAt       time.Time `firestore:"uploaded_at"`
+	UploadedBy       string    `firestore:"uploaded_by"`
 }
 
 type Store struct {
@@ -95,6 +111,33 @@ func (s *Store) Update(ctx context.Context, exp entities.Expense) error {
 	return nil
 }
 
+// FindByID returns the expense with the given doc ID or (nil, nil) when
+// absent.
+func (s *Store) FindByID(ctx context.Context, id string) (*entities.Expense, error) {
+	snap, err := s.client.Collection(collection).Doc(id).Get(ctx)
+	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("expenses: get by id: %w", err)
+	}
+	var doc expenseDoc
+	if err := snap.DataTo(&doc); err != nil {
+		return nil, fmt.Errorf("expenses: decode: %w", err)
+	}
+	out := docToEntity(doc)
+	return &out, nil
+}
+
+// Delete removes the expense doc by ID. Idempotent — deleting a non-existent
+// doc is a no-op.
+func (s *Store) Delete(ctx context.Context, id string) error {
+	if _, err := s.client.Collection(collection).Doc(id).Delete(ctx); err != nil {
+		return fmt.Errorf("expenses: delete: %w", err)
+	}
+	return nil
+}
+
 // FindByNameAndDate is the upsert lookup used by the CSV import. Returns
 // (nil, nil) when no match exists.
 func (s *Store) FindByNameAndDate(ctx context.Context, name string, date time.Time) (*entities.Expense, error) {
@@ -120,6 +163,8 @@ func (s *Store) FindByNameAndDate(ctx context.Context, name string, date time.Ti
 	return &out, nil
 }
 
+// docToEntity decodes a Firestore expense doc to its domain shape.
+// Attachments are loaded separately via AttachmentsStore (subcollection).
 func docToEntity(d expenseDoc) entities.Expense {
 	return entities.Expense{
 		ID:               d.ID,
@@ -137,11 +182,15 @@ func docToEntity(d expenseDoc) entities.Expense {
 		Settled:          d.Settled,
 		SettledAt:        d.SettledAt,
 		Note:             d.Note,
+		TemplateID:       d.TemplateID,
+		AmountPending:    d.AmountPending,
 		CreatedAt:        d.CreatedAt,
 		UpdatedAt:        d.UpdatedAt,
 	}
 }
 
+// entityToDoc encodes a domain expense to its Firestore shape. Attachments
+// are intentionally NOT persisted on the doc — they live in a subcollection.
 func entityToDoc(e entities.Expense) expenseDoc {
 	return expenseDoc{
 		ID:               e.ID,
@@ -159,7 +208,21 @@ func entityToDoc(e entities.Expense) expenseDoc {
 		Settled:          e.Settled,
 		SettledAt:        e.SettledAt,
 		Note:             e.Note,
+		TemplateID:       e.TemplateID,
+		AmountPending:    e.AmountPending,
 		CreatedAt:        e.CreatedAt,
 		UpdatedAt:        e.UpdatedAt,
+	}
+}
+
+func attachmentToDoc(a entities.Attachment) attachmentDoc {
+	return attachmentDoc{
+		ID:               a.ID,
+		ObjectName:       a.ObjectName,
+		ContentType:      a.ContentType,
+		SizeBytes:        a.SizeBytes,
+		OriginalFilename: a.OriginalFilename,
+		UploadedAt:       a.UploadedAt,
+		UploadedBy:       a.UploadedBy,
 	}
 }

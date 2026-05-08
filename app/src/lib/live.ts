@@ -5,12 +5,13 @@
 
 import {
 	collection,
+	collectionGroup,
 	onSnapshot,
 	type QueryDocumentSnapshot,
 	type Unsubscribe
 } from 'firebase/firestore';
 
-import type { Category, Expense, Foyer } from './api';
+import type { Attachment, Category, ExpenseTemplate, Expense, Foyer, Frequency } from './api';
 import { firebaseFirestore } from './firebase';
 
 type SnapData = Record<string, unknown>;
@@ -120,6 +121,13 @@ export function subscribeCategories(
 }
 
 // ─── Expenses ────────────────────────────────────────────────────────
+//
+// Attachments live in the subcollection `expenses/{id}/attachments/{aid}`
+// (not inline on the expense doc) since the v2 review. Use
+// `subscribeAllAttachments` alongside `subscribeExpenses` and merge by
+// expense_id in the page — that keeps the listener overhead at two
+// (collection + collectionGroup) regardless of how many expenses exist.
+
 export function subscribeExpenses(
 	onData: (exps: Expense[]) => void,
 	onError?: (err: Error) => void
@@ -143,6 +151,8 @@ export function subscribeExpenses(
 				settled: Boolean(d.settled),
 				settled_at: isoOrUndef(d.settled_at),
 				note: typeof d.note === 'string' ? d.note : undefined,
+				template_id: typeof d.template_id === 'string' && d.template_id ? d.template_id : undefined,
+				amount_pending: Boolean(d.amount_pending),
 				created_at: isoOf(d.created_at),
 				updated_at: isoOf(d.updated_at)
 			}) satisfies Expense,
@@ -151,6 +161,107 @@ export function subscribeExpenses(
 				if (a.date !== b.date) return b.date.localeCompare(a.date);
 				return b.created_at.localeCompare(a.created_at);
 			}),
+		onData,
+		onError
+	);
+}
+
+// ─── Attachments (subcollection across all expenses) ─────────────────
+//
+// One collectionGroup listener delivers every attachment doc across every
+// expense in the copro. Callers index by `expense_id` to merge into their
+// expense rows. The `expense_id` is derived from the doc's parent ref —
+// not a stored field — so it's always trustworthy.
+
+export interface ExpenseAttachment extends Attachment {
+	expense_id: string;
+}
+
+export function subscribeAllAttachments(
+	onData: (atts: ExpenseAttachment[]) => void,
+	onError?: (err: Error) => void
+): Unsubscribe {
+	return onSnapshot(
+		collectionGroup(firebaseFirestore(), 'attachments'),
+		(snap) => {
+			const out: ExpenseAttachment[] = [];
+			for (const d of snap.docs) {
+				const data = d.data() as SnapData;
+				// `parent.parent` is the expense doc reference; its id is
+				// the expense_id. Defensive: skip orphan docs that somehow
+				// don't have a parent expense (shouldn't happen).
+				const expenseRef = d.ref.parent.parent;
+				if (!expenseRef) continue;
+				out.push({
+					expense_id: expenseRef.id,
+					id: d.id,
+					object_name: String(data.object_name ?? ''),
+					content_type: String(data.content_type ?? ''),
+					size_bytes: Number(data.size_bytes ?? 0),
+					original_filename: String(data.original_filename ?? ''),
+					uploaded_at: isoOf(data.uploaded_at),
+					uploaded_by: String(data.uploaded_by ?? '')
+				});
+			}
+			out.sort((a, b) => a.uploaded_at.localeCompare(b.uploaded_at));
+			onData(out);
+		},
+		(err) => onError?.(err)
+	);
+}
+
+// ─── Templates ───────────────────────────────────────────────────────
+const KNOWN_FREQUENCIES: ReadonlyArray<Frequency> = ['monthly', 'quarterly', 'yearly'];
+function asFrequency(v: unknown): Frequency | undefined {
+	return KNOWN_FREQUENCIES.find((f) => f === v);
+}
+
+const KNOWN_DIST_MODES: ReadonlyArray<ExpenseTemplate['distribution_mode']> = [
+	'equal',
+	'tantiemes',
+	'custom'
+];
+function asDistMode(v: unknown): ExpenseTemplate['distribution_mode'] {
+	const found = KNOWN_DIST_MODES.find((m) => m === v);
+	// Garbage Firestore data shouldn't crash the UI — default to `equal`
+	// and warn so the bad doc is visible in DevTools.
+	if (!found) {
+		console.warn('subscribeTemplates: unknown distribution_mode, defaulting to equal', v);
+		return 'equal';
+	}
+	return found;
+}
+
+export function subscribeTemplates(
+	onData: (tpls: ExpenseTemplate[]) => void,
+	onError?: (err: Error) => void
+): Unsubscribe {
+	return subscribe<ExpenseTemplate>(
+		'expense_templates',
+		(snap, d) =>
+			({
+				id: snap.id,
+				copro_id: String(d.copro_id ?? ''),
+				name: String(d.name ?? ''),
+				amount_default_cents: Number(d.amount_default_cents ?? 0),
+				currency: String(d.currency ?? 'EUR'),
+				category_id: String(d.category_id ?? ''),
+				payer_foyer_id: String(d.payer_foyer_id ?? ''),
+				distribution_mode: asDistMode(d.distribution_mode),
+				share_rdc_cents:
+					typeof d.share_rdc_cents === 'number' ? Number(d.share_rdc_cents) : undefined,
+				share_1er_cents:
+					typeof d.share_1er_cents === 'number' ? Number(d.share_1er_cents) : undefined,
+				note: typeof d.note === 'string' ? d.note : undefined,
+				schedule_active: Boolean(d.schedule_active),
+				frequency: asFrequency(d.frequency),
+				day_of_month: typeof d.day_of_month === 'number' ? Number(d.day_of_month) : undefined,
+				next_occurrence_at: isoOrUndef(d.next_occurrence_at),
+				end_date: isoOrUndef(d.end_date),
+				created_at: isoOf(d.created_at),
+				updated_at: isoOf(d.updated_at)
+			}) satisfies ExpenseTemplate,
+		(rows) => rows.sort((a, b) => a.name.localeCompare(b.name, 'fr')),
 		onData,
 		onError
 	);

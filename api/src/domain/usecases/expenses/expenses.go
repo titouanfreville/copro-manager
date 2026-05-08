@@ -57,6 +57,18 @@ type CreateInput struct {
 	// (recommended) when Settled is true and known; nil for CSV imports
 	// where the legacy spreadsheet doesn't carry that date.
 	SettledAt *time.Time
+	// TemplateID stamps the row with its originating ExpenseTemplate, when
+	// applicable. Empty for hand-typed expenses; set by both manual
+	// instantiation (form pre-fill carries it through) and the scheduled
+	// materializer.
+	TemplateID string
+	// AmountPending opts the row into "no amount yet" mode — used by the
+	// scheduled materializer when AmountDefault on the template is 0
+	// (utility bills with variable amounts arriving on a known cadence).
+	// Pending rows skip share computation, allow AmountCents == 0, and
+	// are excluded from the running balance. The Update path clears the
+	// flag automatically when a valid amount is provided.
+	AmountPending bool
 }
 
 // UpsertResult tells the caller whether a brand-new doc was written or an
@@ -71,6 +83,15 @@ type UpsertResult struct {
 // stay here so share-computation logic remains canonical.
 type Usecases interface {
 	Create(ctx context.Context, in CreateInput) (*entities.Expense, error)
+	// Update replaces every editable field of an existing expense.
+	// Identity (ID + CreatedAt) is preserved; UpdatedAt is refreshed.
+	// Shares are recomputed from the supplied mode + amount unless
+	// in.TrustExplicitShares is set, in which case the supplied shares
+	// are taken verbatim (after sum validation).
+	Update(ctx context.Context, id string, in CreateInput) (*entities.Expense, error)
+	// Delete removes an expense permanently. The actor must be a member of
+	// one of the foyers in the copro. Cascades any attachment blobs.
+	Delete(ctx context.Context, id, actorUserID string) error
 	// Upsert inserts a new expense or replaces an existing one matched by
 	// (Name, Date). Used by the CSV import flow so re-uploading the same
 	// spreadsheet doesn't create duplicates.
@@ -79,32 +100,51 @@ type Usecases interface {
 	// row. defaultPayerFoyerID is applied to all rows since the legacy
 	// format doesn't track payer identity.
 	ImportCSV(ctx context.Context, r io.Reader, defaultPayerFoyerID string) (*ImportSummary, error)
+
+	// RequestUploadURL validates the file declaration and returns a
+	// short-lived V4 signed PUT URL the browser uploads directly to.
+	RequestUploadURL(ctx context.Context, expenseID string, in RequestUploadInput) (*RequestUploadResult, error)
+	// RecordAttachment is the second leg of the upload dance — verifies
+	// the GCS object exists with the declared metadata, then writes the
+	// inline Attachment record on the expense.
+	RecordAttachment(ctx context.Context, expenseID string, in RecordAttachmentInput) (*entities.Attachment, error)
+	// GetDownloadURL issues a fresh signed GET URL for an existing
+	// attachment. Always called per-click — the URL is short-lived.
+	GetDownloadURL(ctx context.Context, expenseID, attachmentID, actorUserID string) (string, time.Time, error)
+	// DeleteAttachment drops both the GCS blob and the inline metadata.
+	DeleteAttachment(ctx context.Context, expenseID, attachmentID, actorUserID string) error
 }
 
 type usecases struct {
-	logger     *zap.Logger
-	expenses   interfaces.ExpensesStore
-	foyers     interfaces.FoyersStore
-	copros     interfaces.CoprosStore
-	categories interfaces.CategoriesStore
-	now        func() time.Time
+	logger      *zap.Logger
+	expenses    interfaces.ExpensesStore
+	attachments interfaces.AttachmentsStore
+	foyers      interfaces.FoyersStore
+	copros      interfaces.CoprosStore
+	categories  interfaces.CategoriesStore
+	storage     interfaces.StorageService
+	now         func() time.Time
 }
 
 // New builds an expenses usecase.
 func New(
 	logger *zap.Logger,
 	expenses interfaces.ExpensesStore,
+	attachments interfaces.AttachmentsStore,
 	foyers interfaces.FoyersStore,
 	copros interfaces.CoprosStore,
 	categories interfaces.CategoriesStore,
+	storage interfaces.StorageService,
 ) Usecases {
 	return &usecases{
-		logger:     logger.Named("usecases.expenses"),
-		expenses:   expenses,
-		foyers:     foyers,
-		copros:     copros,
-		categories: categories,
-		now:        time.Now,
+		logger:      logger.Named("usecases.expenses"),
+		expenses:    expenses,
+		attachments: attachments,
+		foyers:      foyers,
+		copros:      copros,
+		categories:  categories,
+		storage:     storage,
+		now:         time.Now,
 	}
 }
 
@@ -158,7 +198,7 @@ func (uc *usecases) Create(ctx context.Context, in CreateInput) (*entities.Expen
 		return nil, fmt.Errorf("copro lookup: %w", err)
 	}
 
-	shareRDC, share1er, err := computeShares(in, rdc, premier, copro)
+	shareRDC, share1er, err := computeSharesOrPending(in, rdc, premier, copro)
 	if err != nil {
 		log.Warn("share computation failed", zap.Error(err))
 		return nil, err
@@ -186,6 +226,8 @@ func (uc *usecases) Create(ctx context.Context, in CreateInput) (*entities.Expen
 		Settled:          in.Settled,
 		SettledAt:        normalizeSettledAt(in.Settled, in.SettledAt),
 		Note:             in.Note,
+		TemplateID:       in.TemplateID,
+		AmountPending:    in.AmountPending,
 		CreatedAt:        now,
 		UpdatedAt:        now,
 	}
@@ -206,6 +248,185 @@ func normalizeSettledAt(settled bool, at *time.Time) *time.Time {
 		return nil
 	}
 	return at
+}
+
+// Update mirrors Create's validation + share-computation flow but writes to
+// an existing expense doc. Returns ErrNotFound when the id doesn't exist.
+//
+// Authorization is checked before any resource lookup so non-foyer-members
+// can't probe expense IDs (404 vs 403 leak).
+func (uc *usecases) Update(ctx context.Context, id string, in CreateInput) (*entities.Expense, error) {
+	log := uc.logger.With(
+		zap.String("method", "Update"),
+		zap.String("expense_id", id),
+		zap.String("mode", string(in.DistributionMode)),
+	)
+
+	if err := validateInput(in); err != nil {
+		log.Warn("validation failed", zap.Error(err))
+		return nil, err
+	}
+
+	rdc, premier, err := uc.loadFoyers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if in.ActorUserID != "" && !isFoyerMember(in.ActorUserID, rdc, premier) {
+		log.Warn("actor is not a foyer member", zap.String("actor_user_id", in.ActorUserID))
+		return nil, entities.AuthorizationError{Code: "not_foyer_member"}
+	}
+
+	existing, err := uc.expenses.FindByID(ctx, id)
+	if err != nil {
+		log.Error("expense lookup failed", zap.Error(err))
+		return nil, fmt.Errorf("find expense by id: %w", err)
+	}
+	if existing == nil {
+		log.Warn("expense not found")
+		return nil, fmt.Errorf("%w: expense %q", domainerrors.ErrNotFound, id)
+	}
+
+	// Once an expense is confirmed (AmountPending=false with a non-zero
+	// amount), the user can't revert it to pending — that would zero shares
+	// and silently corrupt the running balance. Re-creation is the right
+	// path if the row truly needs to start over.
+	if !existing.AmountPending && existing.AmountCents > 0 && in.AmountPending {
+		return nil, entities.ValidationError{
+			Key:     "amount_pending",
+			Message: "cannot revert a confirmed expense to pending",
+		}
+	}
+
+	cat, err := uc.categories.FindByID(ctx, in.CategoryID)
+	if err != nil {
+		return nil, fmt.Errorf("category lookup: %w", err)
+	}
+	if cat == nil {
+		return nil, entities.ValidationError{Key: "category_id", Message: "not found"}
+	}
+
+	if in.PayerFoyerID != rdc.ID && in.PayerFoyerID != premier.ID {
+		return nil, entities.ValidationError{Key: "payer_foyer_id", Message: "not a foyer of this copro"}
+	}
+
+	copro, err := uc.copros.GetOrCreateSingleton(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("copro lookup: %w", err)
+	}
+
+	shareRDC, share1er, err := computeSharesOrPending(in, rdc, premier, copro)
+	if err != nil {
+		return nil, err
+	}
+
+	currency := strings.ToUpper(strings.TrimSpace(in.Currency))
+	if currency == "" {
+		currency = existing.Currency
+	}
+
+	now := uc.now()
+	existing.Name = strings.TrimSpace(in.Name)
+	existing.AmountCents = in.AmountCents
+	existing.Currency = currency
+	existing.Date = in.Date
+	existing.PaymentDate = in.PaymentDate
+	existing.PayerFoyerID = in.PayerFoyerID
+	existing.CategoryID = in.CategoryID
+	existing.DistributionMode = in.DistributionMode
+	existing.ShareRDCCents = shareRDC
+	existing.Share1erCents = share1er
+	existing.Settled = in.Settled
+	// Preserve the existing SettledAt when the caller marks the row settled
+	// but omits the timestamp — clients that PATCH a partial body shouldn't
+	// silently wipe the audit trail.
+	existing.SettledAt = mergeSettledAt(in.Settled, in.SettledAt, existing.SettledAt)
+	existing.Note = in.Note
+	// TemplateID is preserved when present — Update doesn't typically
+	// clear lineage. Only overwrite when the input carries a value.
+	if in.TemplateID != "" {
+		existing.TemplateID = in.TemplateID
+	}
+	existing.AmountPending = in.AmountPending
+	existing.UpdatedAt = now
+
+	if err := uc.expenses.Update(ctx, *existing); err != nil {
+		log.Error("update failed", zap.Error(err))
+		return nil, fmt.Errorf("update expense: %w", err)
+	}
+
+	log.Info("Success")
+	return existing, nil
+}
+
+// mergeSettledAt is the Update-time analog of normalizeSettledAt: when the
+// caller marks the row settled but doesn't echo the timestamp, fall back to
+// the existing one. Wipe SettledAt entirely when Settled flips to false.
+func mergeSettledAt(settled bool, in *time.Time, existing *time.Time) *time.Time {
+	if !settled {
+		return nil
+	}
+	if in == nil {
+		return existing
+	}
+	return in
+}
+
+// Delete removes an expense after authorizing the actor as a foyer member.
+// Idempotent at the storage layer — deleting a missing doc is a no-op,
+// surfaced here as ErrNotFound so the route handler can return 404.
+//
+// Cascades any GCS attachment blobs under the expense's prefix. The blob
+// cleanup is best-effort: failures are logged but do not roll back the
+// metadata delete (orphaned blobs are recoverable; rolling back a
+// successful delete is worse UX than a stale prefix).
+func (uc *usecases) Delete(ctx context.Context, id, actorUserID string) error {
+	log := uc.logger.With(zap.String("method", "Delete"), zap.String("expense_id", id))
+
+	// Authorize before resource lookup so non-foyer-members can't probe
+	// expense existence (404 vs 403 leak).
+	if actorUserID != "" {
+		rdc, premier, err := uc.loadFoyers(ctx)
+		if err != nil {
+			return err
+		}
+		if !isFoyerMember(actorUserID, rdc, premier) {
+			log.Warn("actor is not a foyer member", zap.String("actor_user_id", actorUserID))
+			return entities.AuthorizationError{Code: "not_foyer_member"}
+		}
+	}
+
+	existing, err := uc.expenses.FindByID(ctx, id)
+	if err != nil {
+		log.Error("expense lookup failed", zap.Error(err))
+		return fmt.Errorf("find expense by id: %w", err)
+	}
+	if existing == nil {
+		log.Warn("expense not found")
+		return fmt.Errorf("%w: expense %q", domainerrors.ErrNotFound, id)
+	}
+
+	// Cascade attachments BEFORE deleting the parent so the subcollection
+	// docs are reachable. Best-effort: if Firestore subcollection delete or
+	// GCS blob cleanup fails, we still drop the parent so the user's "delete"
+	// action isn't blocked by orphan-cleanup hiccups.
+	if uc.attachments != nil {
+		if err := uc.attachments.DeleteAll(ctx, id); err != nil {
+			log.Warn("attachment subcollection cleanup failed (orphan docs may remain)", zap.Error(err))
+		}
+	}
+	if uc.storage != nil {
+		if err := uc.storage.DeletePrefix(ctx, attachmentPrefix(id)); err != nil {
+			log.Warn("attachment blob cleanup failed (orphan blobs may remain)", zap.Error(err))
+		}
+	}
+
+	if err := uc.expenses.Delete(ctx, id); err != nil {
+		log.Error("delete failed", zap.Error(err))
+		return fmt.Errorf("delete expense: %w", err)
+	}
+
+	log.Info("Success")
+	return nil
 }
 
 // Upsert performs the same validation + computation as Create, but matches
@@ -429,7 +650,14 @@ func validateInput(in CreateInput) error {
 	if strings.TrimSpace(in.Name) == "" {
 		details = append(details, entities.Detail{Key: "name", Message: "required"})
 	}
-	if in.AmountCents <= 0 {
+	// AmountPending rows are minted with amount = 0 — the "fill me in
+	// later" state used by the scheduled materializer. Every other row
+	// must have a positive amount.
+	if in.AmountPending {
+		if in.AmountCents != 0 {
+			details = append(details, entities.Detail{Key: "amount_cents", Message: "must be 0 when amount_pending is true"})
+		}
+	} else if in.AmountCents <= 0 {
 		details = append(details, entities.Detail{Key: "amount_cents", Message: "must be > 0"})
 	}
 	if !entities.IsKnownDistributionMode(in.DistributionMode) {
@@ -452,4 +680,15 @@ func validateInput(in CreateInput) error {
 		}
 	}
 	return nil
+}
+
+// computeSharesOrPending wraps computeShares with the pending short-circuit
+// — pending rows always store 0/0 shares regardless of the requested mode.
+// The shares get recomputed the next time Update is called with a real
+// amount and amount_pending=false.
+func computeSharesOrPending(in CreateInput, rdc, premier *entities.Foyer, copro *entities.Copro) (int, int, error) {
+	if in.AmountPending {
+		return 0, 0, nil
+	}
+	return computeShares(in, rdc, premier, copro)
 }

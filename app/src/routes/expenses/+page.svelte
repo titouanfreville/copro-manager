@@ -2,9 +2,36 @@
 	import { goto } from '$app/navigation';
 	import { ApiError } from '$lib/api';
 	import { authState, logout } from '$lib/auth';
-	import { createExpense } from '$lib/expenses';
-	import { subscribeCategories, subscribeExpenses, subscribeFoyers } from '$lib/live';
-	import type { Category, DistributionMode, Expense, Foyer } from '$lib/api';
+	import { computeBalance } from '$lib/balance';
+	import {
+		ATTACHMENT_ACCEPT,
+		ATTACHMENT_MAX_BYTES,
+		ATTACHMENT_MAX_PER_EXPENSE,
+		attachFile,
+		createExpense,
+		deleteAttachment,
+		deleteExpense,
+		getAttachmentDownloadUrl,
+		isImageAttachment,
+		materializeRecurring,
+		updateExpense
+	} from '$lib/expenses';
+	import {
+		subscribeAllAttachments,
+		subscribeCategories,
+		subscribeExpenses,
+		subscribeFoyers,
+		subscribeTemplates,
+		type ExpenseAttachment
+	} from '$lib/live';
+	import type {
+		Attachment,
+		Category,
+		DistributionMode,
+		Expense,
+		ExpenseTemplate,
+		Foyer
+	} from '$lib/api';
 
 	// ─────────────────────────────────────────────────────────────
 	// State
@@ -12,6 +39,7 @@
 	let foyers = $state<Foyer[]>([]);
 	let categories = $state<Category[]>([]);
 	let expenses = $state<Expense[]>([]);
+	let templates = $state<ExpenseTemplate[]>([]);
 	let liveError = $state('');
 	let foyersReady = $state(false);
 	let categoriesReady = $state(false);
@@ -40,6 +68,197 @@
 	let note = $state('');
 	let creating = $state(false);
 	let createError = $state('');
+	// When set, the modal is in EDIT mode targeting this expense ID;
+	// otherwise it's CREATE mode.
+	let editingId = $state<string | null>(null);
+	let isEditing = $derived(editingId !== null);
+	// Per-row "deleting…" tracker so the UI can show a busy state on the
+	// specific row being removed without freezing the whole page.
+	let deletingId = $state<string | null>(null);
+
+	// Chooser sheet (Vide / Depuis un modèle) and template picker sheet —
+	// shown one at a time when the user taps the FAB.
+	let chooserOpen = $state(false);
+	let pickerOpen = $state(false);
+
+	// ─── Attachments ──────────────────────────────────────────────
+	// `pendingFiles`: queued File objects in the modal; uploaded after the
+	// expense is saved so the create flow can include attachments in one
+	// shot. `uploadingFile` is the index currently being uploaded.
+	let pendingFiles = $state<File[]>([]);
+	let uploadingFileIdx = $state<number | null>(null);
+	let uploadError = $state('');
+	// Per-row drawer expand state, keyed by expense ID.
+	let expandedRows = $state<Record<string, boolean>>({});
+	// Per-row "deleting attachment" tracker, keyed by attachment ID.
+	let deletingAttachmentId = $state<string | null>(null);
+	// Cache of resolved signed download URLs, keyed by attachment ID. The
+	// API issues 10-min URLs; we keep a 30-second safety margin so we
+	// don't hand out an about-to-expire URL.
+	type CachedUrl = { url: string; expiresAtMs: number };
+	let downloadUrlCache = $state<Record<string, CachedUrl>>({});
+	// Attachments live in a Firestore subcollection now (one doc per file
+	// under each expense). One collectionGroup listener delivers all of
+	// them; we group by expense_id and merge into the rendered ledger rows
+	// via $derived.
+	let attachmentsByExpense = $state<Record<string, ExpenseAttachment[]>>({});
+	// Effective row used for rendering: expense + its attachments.
+	let renderedExpenses = $derived(
+		expenses.map((e) => ({
+			...e,
+			attachments: attachmentsByExpense[e.id] ?? e.attachments ?? []
+		}))
+	);
+	// Aborter shared by the in-flight upload loop so the user can bail.
+	let uploadAborter = $state<AbortController | null>(null);
+
+	function attachmentKey(expenseId: string, attId: string): string {
+		return `${expenseId}/${attId}`;
+	}
+
+	async function resolveDownloadUrl(expenseId: string, attId: string): Promise<string> {
+		const key = attachmentKey(expenseId, attId);
+		const cached = downloadUrlCache[key];
+		const safetyMs = 30_000;
+		if (cached && cached.expiresAtMs - safetyMs > Date.now()) {
+			return cached.url;
+		}
+		const { url, expiresAt } = await getAttachmentDownloadUrl(expenseId, attId);
+		// Spread-style assignment so Svelte 5's fine-grained reactivity picks
+		// up the cache update on every read, not just the first.
+		downloadUrlCache = {
+			...downloadUrlCache,
+			[key]: { url, expiresAtMs: new Date(expiresAt).getTime() }
+		};
+		return url;
+	}
+
+	function toggleRowDrawer(expenseId: string) {
+		expandedRows[expenseId] = !expandedRows[expenseId];
+	}
+
+	async function onViewAttachment(expense: Expense, att: Attachment) {
+		// Open the popup synchronously inside the click handler — Safari and
+		// most pop-up blockers lose the user-gesture context across `await`,
+		// so a `window.open` after the resolveDownloadUrl Promise resolves
+		// would be silently swallowed. The placeholder window navigates to
+		// the signed URL once it resolves.
+		const popup = window.open('about:blank', '_blank', 'noopener,noreferrer');
+		try {
+			const url = await resolveDownloadUrl(expense.id, att.id);
+			if (popup) {
+				popup.location.href = url;
+			} else {
+				// Pop-up blocked. Fall back to in-tab navigation so the user
+				// still gets the file.
+				window.location.href = url;
+			}
+		} catch (err) {
+			popup?.close();
+			liveError = err instanceof ApiError ? `${err.code}: ${err.message}` : String(err);
+		}
+	}
+
+	async function onDeleteAttachment(expense: Expense, att: Attachment) {
+		if (deletingAttachmentId) return;
+		const ok = window.confirm(
+			`Supprimer la pièce jointe « ${att.original_filename || att.id} » ?`
+		);
+		if (!ok) return;
+		deletingAttachmentId = att.id;
+		try {
+			await deleteAttachment(expense.id, att.id);
+			const next = { ...downloadUrlCache };
+			delete next[attachmentKey(expense.id, att.id)];
+			downloadUrlCache = next;
+		} catch (err) {
+			liveError = err instanceof ApiError ? `${err.code}: ${err.message}` : String(err);
+		} finally {
+			deletingAttachmentId = null;
+		}
+	}
+
+	function onPickFiles(e: Event) {
+		const input = e.currentTarget as HTMLInputElement;
+		const picked = input.files;
+		if (!picked || picked.length === 0) return;
+		uploadError = '';
+		const accepted = ATTACHMENT_ACCEPT.split(',');
+		const next: File[] = pendingFiles.slice();
+		// When editing, count the attachments already saved on the expense
+		// so we don't blow past the per-expense cap by adding too many
+		// pendings.
+		const existing = editingId ? (attachmentsByExpense[editingId]?.length ?? 0) : 0;
+		const errors: string[] = [];
+		for (const file of Array.from(picked)) {
+			if (next.length + existing >= ATTACHMENT_MAX_PER_EXPENSE) {
+				errors.push(`Maximum ${ATTACHMENT_MAX_PER_EXPENSE} pièces jointes par dépense.`);
+				break;
+			}
+			// HEIC/HEIF files often arrive with `file.type === ''` on iOS —
+			// fall back to the extension before rejecting outright.
+			const lowered = file.name.toLowerCase();
+			const heicByExt = lowered.endsWith('.heic') || lowered.endsWith('.heif');
+			const typeOk = accepted.includes(file.type) || (file.type === '' && heicByExt);
+			if (!typeOk) {
+				errors.push(`Type non supporté : ${file.name} (${file.type || 'inconnu'}).`);
+				continue;
+			}
+			if (file.size > ATTACHMENT_MAX_BYTES) {
+				errors.push(`Trop volumineux : ${file.name} (max 10 Mo).`);
+				continue;
+			}
+			next.push(file);
+		}
+		// Accumulate errors instead of overwriting — surface every reason
+		// the user's pick was partially rejected.
+		if (errors.length) uploadError = errors.join(' ');
+		pendingFiles = next;
+		// Reset the input so picking the same file twice fires the change event.
+		input.value = '';
+	}
+
+	function removePendingFile(idx: number) {
+		pendingFiles = pendingFiles.filter((_, i) => i !== idx);
+	}
+
+	function formatFileSize(bytes: number): string {
+		if (bytes < 1024) return `${bytes} o`;
+		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} Ko`;
+		return `${(bytes / (1024 * 1024)).toFixed(1)} Mo`;
+	}
+
+	async function uploadPendingFiles(expenseId: string) {
+		uploadAborter = new AbortController();
+		try {
+			// Process sequentially with per-file isolation: if file N fails
+			// we keep files 1..N-1 marked as uploaded (they really did
+			// land), drop them from the queue, and re-throw with the
+			// remaining queue still in `pendingFiles` so the user can
+			// retry just the failures rather than re-uploading the
+			// successes.
+			while (pendingFiles.length > 0) {
+				uploadingFileIdx = 0;
+				const file = pendingFiles[0];
+				try {
+					await attachFile(expenseId, file, { signal: uploadAborter.signal });
+				} catch (err) {
+					// Leave the failing file at the head of the queue so
+					// the user sees what didn't make it.
+					throw err;
+				}
+				// Success — drop the head and continue.
+				pendingFiles = pendingFiles.slice(1);
+			}
+		} finally {
+			uploadingFileIdx = null;
+			uploadAborter = null;
+		}
+	}
+
+	function cancelUpload() {
+		uploadAborter?.abort();
+	}
 
 	function setRdcPercentBp(v: number) {
 		if (!Number.isFinite(v)) return;
@@ -93,8 +312,27 @@
 			subscribeExpenses((rows) => {
 				expenses = rows;
 				expensesReady = true;
+			}, onErr),
+			subscribeTemplates((rows) => {
+				templates = rows;
+			}, onErr),
+			subscribeAllAttachments((atts) => {
+				const grouped: Record<string, ExpenseAttachment[]> = {};
+				for (const a of atts) {
+					(grouped[a.expense_id] ||= []).push(a);
+				}
+				attachmentsByExpense = grouped;
 			}, onErr)
 		];
+
+		// Lazy materialization: fire-and-forget. The daily Cloud Scheduler
+		// cron is the primary path; this catches "I just created a template,
+		// run it now" without waiting for tomorrow's job. Idempotent
+		// server-side, so duplicate calls are no-ops.
+		materializeRecurring().catch((err) => {
+			// Don't surface to liveError — silent backstop. Log only.
+			console.warn('materialize-recurring failed', err);
+		});
 
 		return () => {
 			unsubs.forEach((u) => u());
@@ -220,23 +458,16 @@
 	let premierFoyer = $derived(foyers.find((f) => f.floor === '1er'));
 
 	// Net balance from RDC's perspective. Positive → 1er owes RDC.
-	// Settled expenses (both households already paid their share directly,
-	// e.g. CSV-imported legacy rows) are excluded — they shouldn't move
-	// the balance.
-	let balance = $derived.by(() => {
-		if (!rdcFoyer || !premierFoyer) return null;
-		let net = 0;
-		for (const e of expenses) {
-			if (e.settled) continue;
-			if (e.payer_foyer_id === rdcFoyer.id) net += e.share_1er_cents;
-			else if (e.payer_foyer_id === premierFoyer.id) net -= e.share_rdc_cents;
-		}
-		return { net, rdc: rdcFoyer, premier: premierFoyer };
-	});
+	// Shared with the global chrome via $lib/balance — settled rows are
+	// excluded both places.
+	let balance = $derived(computeBalance(expenses, foyers));
 
 	let groupedExpenses = $derived.by(() => {
 		const map = new Map<string, Expense[]>();
-		for (const e of expenses) {
+		// Iterate `renderedExpenses` so each row carries its merged
+		// attachments (from the subcollection listener) for inline
+		// thumbnails / counts.
+		for (const e of renderedExpenses) {
 			const key = e.date.slice(0, 7);
 			const arr = map.get(key) ?? [];
 			arr.push(e);
@@ -247,6 +478,7 @@
 
 	let monthCount = $derived(groupedExpenses.length);
 	let totalCount = $derived(expenses.length);
+	let pendingCount = $derived(expenses.filter((e) => e.amount_pending).length);
 
 	// Live € preview for the Manuel/Pourcentage panel.
 	let amountCentsPreview = $derived.by(() => {
@@ -259,12 +491,139 @@
 	// ─────────────────────────────────────────────────────────────
 	// Actions
 	// ─────────────────────────────────────────────────────────────
-	function openCreate() {
-		modalOpen = true;
+	function resetForm() {
+		editingId = null;
+		pendingTemplateId = null;
+		name = '';
+		amountEuros = '';
+		date = new Date().toISOString().slice(0, 10);
+		paymentDate = '';
+		settled = false;
+		settledAt = '';
+		mode = 'equal';
+		customSubMode = 'percent';
+		rdcPercentBp = BP_TOTAL / 2;
+		shareRDCEuros = '';
+		share1erEuros = '';
+		note = '';
 		createError = '';
+		pendingFiles = [];
+		uploadingFileIdx = null;
+		uploadError = '';
 	}
+
+	function openChooser() {
+		chooserOpen = true;
+	}
+	function closeChooser() {
+		chooserOpen = false;
+	}
+	function chooseBlank() {
+		chooserOpen = false;
+		openCreate();
+	}
+	function chooseFromTemplate() {
+		chooserOpen = false;
+		// If no templates yet, route to /templates so the user can add one.
+		if (templates.length === 0) {
+			goto('/templates');
+			return;
+		}
+		pickerOpen = true;
+	}
+	function closePicker() {
+		pickerOpen = false;
+	}
+	function applyTemplate(t: ExpenseTemplate) {
+		pickerOpen = false;
+		resetForm();
+		name = t.name;
+		amountEuros = t.amount_default_cents > 0 ? (t.amount_default_cents / 100).toFixed(2) : '';
+		payerFoyerId = t.payer_foyer_id;
+		categoryId = t.category_id;
+		mode = t.distribution_mode;
+		note = t.note ?? '';
+		if (t.distribution_mode === 'custom') {
+			customSubMode = 'exact';
+			shareRDCEuros = t.share_rdc_cents
+				? (t.share_rdc_cents / 100).toFixed(2)
+				: '';
+			share1erEuros = t.share_1er_cents
+				? (t.share_1er_cents / 100).toFixed(2)
+				: '';
+		}
+		// Stamp the lineage; the create payload carries it through.
+		pendingTemplateId = t.id;
+		modalOpen = true;
+	}
+	// Holds the template_id that the next createExpense call should carry.
+	// Cleared on resetForm; consumed in onSubmit.
+	let pendingTemplateId = $state<string | null>(null);
+
+	function openCreate() {
+		resetForm();
+		modalOpen = true;
+	}
+
+	/** Pre-fill the form from an existing expense and open the modal in
+	 *  edit mode. Cents are rendered to 2-decimal € strings; the sub-mode
+	 *  defaults to "exact" because the operator is most likely fixing
+	 *  literal amounts (CSV-imported rows, rounding artifacts, etc.). */
+	function openEdit(exp: Expense) {
+		editingId = exp.id;
+		name = exp.name;
+		// Pending rows have no amount yet — leave the field blank so the
+		// user is prompted to type. Otherwise pre-fill from the existing
+		// amount.
+		amountEuros = exp.amount_pending ? '' : (exp.amount_cents / 100).toFixed(2);
+		date = exp.date.slice(0, 10);
+		paymentDate = exp.payment_date ? exp.payment_date.slice(0, 10) : '';
+		settled = exp.settled;
+		settledAt = exp.settled && exp.settled_at ? exp.settled_at.slice(0, 10) : '';
+		payerFoyerId = exp.payer_foyer_id;
+		categoryId = exp.category_id;
+		mode = exp.distribution_mode;
+		// For tantiemes / equal we don't show the share fields, but pre-fill
+		// the percent slider so a switch to Manuel mid-edit lands on the
+		// existing ratio rather than 50/50.
+		if (exp.amount_cents > 0) {
+			rdcPercentBp = Math.round((exp.share_rdc_cents / exp.amount_cents) * BP_TOTAL);
+		} else {
+			rdcPercentBp = BP_TOTAL / 2;
+		}
+		shareRDCEuros = (exp.share_rdc_cents / 100).toFixed(2);
+		share1erEuros = (exp.share_1er_cents / 100).toFixed(2);
+		// Default to "exact" when editing — the operator is most often
+		// adjusting literal amounts on imported rows.
+		customSubMode = 'exact';
+		note = exp.note ?? '';
+		createError = '';
+		modalOpen = true;
+	}
+
 	function closeCreate() {
-		if (!creating) modalOpen = false;
+		if (creating) return;
+		modalOpen = false;
+		// Defer reset to next tick so the closing animation doesn't visibly
+		// lose the form contents mid-flight.
+		setTimeout(resetForm, 220);
+	}
+
+	async function onDelete(exp: Expense) {
+		if (deletingId) return;
+		const confirmed = window.confirm(
+			`Supprimer définitivement « ${exp.name || 'cette dépense'} » ?\nCette action est irréversible.`
+		);
+		if (!confirmed) return;
+		deletingId = exp.id;
+		try {
+			await deleteExpense(exp.id);
+			// Live subscription pushes the removal — no manual refresh.
+		} catch (err) {
+			liveError = err instanceof ApiError ? `${err.code}: ${err.message}` : String(err);
+		} finally {
+			deletingId = null;
+		}
 	}
 
 	async function onSubmit(e: SubmitEvent) {
@@ -295,7 +654,8 @@
 			distribution_mode: mode,
 			settled: settled || undefined,
 			settled_at: settled && settledAt ? settledAt : undefined,
-			note: note.trim() || undefined
+			note: note.trim() || undefined,
+			template_id: pendingTemplateId ?? undefined
 		};
 		if (mode === 'custom') {
 			if (customSubMode === 'percent') {
@@ -320,16 +680,37 @@
 		}
 		creating = true;
 		try {
-			await createExpense(body);
-			name = '';
-			amountEuros = '';
-			paymentDate = '';
-			settled = false;
-			settledAt = '';
-			note = '';
-			shareRDCEuros = '';
-			share1erEuros = '';
+			let savedId: string;
+			if (editingId) {
+				const updated = await updateExpense(editingId, body);
+				savedId = updated.id;
+			} else {
+				const created = await createExpense(body);
+				savedId = created.id;
+				// Switch the modal to EDIT mode immediately so a retry of
+				// "Enregistrer" after a failed upload doesn't create a
+				// second expense — the user is now editing the row that
+				// just landed.
+				editingId = savedId;
+			}
+			// Files queued in the modal upload AFTER the expense saves so
+			// edit and create share the same flow. Failures keep the modal
+			// open so the user sees which file broke and can retry.
+			if (pendingFiles.length > 0) {
+				try {
+					await uploadPendingFiles(savedId);
+				} catch (err) {
+					createError =
+						err instanceof ApiError
+							? `Pièce jointe: ${err.code}: ${err.message}`
+							: `Pièce jointe: ${String(err)}`;
+					return; // leave the modal open, don't reset
+				}
+			}
 			modalOpen = false;
+			// Same defer-reset trick used in closeCreate so we don't blank
+			// the form before the closing animation finishes.
+			setTimeout(resetForm, 220);
 			// No manual refresh needed — Firestore onSnapshot pushes the new doc.
 		} catch (err) {
 			createError = err instanceof ApiError ? `${err.code}: ${err.message}` : String(err);
@@ -364,7 +745,10 @@
 		<div class="user-block">
 			{#if $authState.status === 'signed-in'}
 				<span class="user-email">{$authState.user.email}</span>
-				<button class="link" onclick={() => logout()}>Déconnexion</button>
+				<div class="user-links">
+					<a class="link" href="/templates">Modèles</a>
+					<button class="link" onclick={() => logout()}>Déconnexion</button>
+				</div>
 			{/if}
 		</div>
 	</header>
@@ -436,6 +820,17 @@
 					</span>
 				</header>
 
+				{#if pendingCount > 0}
+					<div class="pending-banner" role="status">
+						<span class="pending-banner-glyph" aria-hidden="true">⌇</span>
+						<span class="pending-banner-text">
+							<strong>{pendingCount}</strong>
+							{pendingCount > 1 ? 'dépenses' : 'dépense'} à compléter — un membre du foyer
+							payeur saisit le montant à réception de la facture.
+						</span>
+					</div>
+				{/if}
+
 				{#if liveError}
 					<div class="error-card" role="alert">{liveError}</div>
 				{:else if !live && expenses.length === 0}
@@ -496,6 +891,12 @@
 												{#if exp.settled}
 													<span class="row-settled" title="Réglée — exclue de la balance">Réglée</span>
 												{/if}
+												{#if exp.amount_pending}
+													<span class="row-pending" title="Montant à compléter">À compléter</span>
+												{/if}
+												{#if exp.template_id}
+													<span class="row-template" title="Créée depuis un modèle">modèle</span>
+												{/if}
 												{#if exp.note}
 													<span class="row-note">{exp.note}</span>
 												{/if}
@@ -539,7 +940,107 @@
 											</p>
 										</div>
 
-										<div class="row-amount">{formatEUR(exp.amount_cents)}</div>
+										<div class="row-right">
+											{#if exp.amount_pending}
+												<button
+													type="button"
+													class="row-amount-cta"
+													onclick={() => openEdit(exp)}
+													title="Cliquer pour saisir le montant"
+												>
+													Compléter
+												</button>
+											{:else}
+												<div class="row-amount">{formatEUR(exp.amount_cents)}</div>
+											{/if}
+											{#if exp.attachments && exp.attachments.length > 0}
+												<button
+													type="button"
+													class="row-attach-chip"
+													onclick={() => toggleRowDrawer(exp.id)}
+													aria-expanded={!!expandedRows[exp.id]}
+													aria-label={`${exp.attachments.length} pièce${exp.attachments.length > 1 ? 's' : ''} jointe${exp.attachments.length > 1 ? 's' : ''}`}
+													title="Pièces jointes"
+												>
+													<span class="paperclip" aria-hidden="true">⌇</span>
+													<span class="row-attach-count">{exp.attachments.length}</span>
+												</button>
+											{/if}
+											<div class="row-actions">
+												<button
+													type="button"
+													class="row-action"
+													aria-label="Modifier la dépense"
+													title="Modifier"
+													onclick={() => openEdit(exp)}
+													disabled={creating || deletingId !== null}
+												>
+													Modifier
+												</button>
+												<button
+													type="button"
+													class="row-action row-action-danger"
+													aria-label="Supprimer la dépense"
+													title="Supprimer"
+													onclick={() => onDelete(exp)}
+													disabled={creating || deletingId !== null}
+												>
+													{deletingId === exp.id ? '…' : 'Supprimer'}
+												</button>
+											</div>
+										</div>
+										{#if expandedRows[exp.id] && exp.attachments && exp.attachments.length > 0}
+											<div class="row-drawer">
+												{#each exp.attachments as att (att.id)}
+													<div class="att-card">
+														{#if isImageAttachment(att)}
+															{#await resolveDownloadUrl(exp.id, att.id)}
+																<div class="att-thumb att-thumb-loading"></div>
+															{:then thumbUrl}
+																<button
+																	type="button"
+																	class="att-thumb"
+																	onclick={() => onViewAttachment(exp, att)}
+																	title={att.original_filename}
+																	aria-label={`Voir ${att.original_filename}`}
+																>
+																	<img src={thumbUrl} alt={att.original_filename} loading="lazy" />
+																</button>
+															{:catch}
+																<div class="att-thumb att-thumb-failed" title="Aperçu indisponible">
+																	!
+																</div>
+															{/await}
+														{:else}
+															<div class="att-thumb att-thumb-pdf" aria-hidden="true">PDF</div>
+														{/if}
+														<div class="att-meta">
+															<span class="att-meta-name" title={att.original_filename}>
+																{att.original_filename || att.id}
+															</span>
+															<span class="att-meta-size">{formatFileSize(att.size_bytes)}</span>
+														</div>
+														<div class="att-actions">
+															<button
+																type="button"
+																class="row-action"
+																onclick={() => onViewAttachment(exp, att)}
+															>
+																Voir
+															</button>
+															<button
+																type="button"
+																class="row-action row-action-danger"
+																onclick={() => onDeleteAttachment(exp, att)}
+																disabled={deletingAttachmentId !== null}
+															>
+																{deletingAttachmentId === att.id ? '…' : 'Supprimer'}
+															</button>
+														</div>
+													</div>
+												{/each}
+											</div>
+										{/if}
 									</li>
 								{/each}
 							</ul>
@@ -550,10 +1051,92 @@
 		</main>
 
 		<!-- ─── FAB ─────────────────────────────────── -->
-		<button class="fab" type="button" onclick={openCreate} aria-label="Nouvelle dépense">
+		<button class="fab" type="button" onclick={openChooser} aria-label="Nouvelle dépense">
 			<span class="fab-plus" aria-hidden="true">+</span>
 			<span class="fab-text">Nouvelle dépense</span>
 		</button>
+
+		<!-- ─── Chooser sheet (Vide / Depuis un modèle) ─── -->
+		{#if chooserOpen}
+			<div
+				class="modal-backdrop"
+				role="presentation"
+				onclick={closeChooser}
+				onkeydown={(e) => e.key === 'Escape' && closeChooser()}
+			></div>
+			<div class="chooser" role="dialog" aria-modal="true" aria-labelledby="chooser-title">
+				<header class="chooser-head">
+					<h2 id="chooser-title">Nouvelle dépense</h2>
+					<button class="modal-close" type="button" onclick={closeChooser} aria-label="Fermer"
+						>×</button
+					>
+				</header>
+				<div class="chooser-body">
+					<button class="chooser-opt" type="button" onclick={chooseBlank}>
+						<span class="chooser-opt-glyph">＋</span>
+						<span class="chooser-opt-text">
+							<strong>Saisie libre</strong>
+							<small>Nouvelle ligne, formulaire vierge.</small>
+						</span>
+					</button>
+					<button class="chooser-opt" type="button" onclick={chooseFromTemplate}>
+						<span class="chooser-opt-glyph">⌇</span>
+						<span class="chooser-opt-text">
+							<strong>Depuis un modèle</strong>
+							<small>
+								{templates.length === 0
+									? 'Aucun modèle — créer le premier.'
+									: `${templates.length} modèle${templates.length > 1 ? 's' : ''} disponible${templates.length > 1 ? 's' : ''}.`}
+							</small>
+						</span>
+					</button>
+				</div>
+			</div>
+		{/if}
+
+		<!-- ─── Template picker sheet ─── -->
+		{#if pickerOpen}
+			<div
+				class="modal-backdrop"
+				role="presentation"
+				onclick={closePicker}
+				onkeydown={(e) => e.key === 'Escape' && closePicker()}
+			></div>
+			<div class="picker" role="dialog" aria-modal="true" aria-labelledby="picker-title">
+				<header class="picker-head">
+					<div>
+						<p class="modal-eyebrow">Modèles</p>
+						<h2 id="picker-title">Choisir un modèle</h2>
+					</div>
+					<button class="modal-close" type="button" onclick={closePicker} aria-label="Fermer"
+						>×</button
+					>
+				</header>
+				<ul class="picker-list">
+					{#each templates as t (t.id)}
+						{@const payer = foyers.find((f) => f.id === t.payer_foyer_id)}
+						<li>
+							<button type="button" class="picker-item" onclick={() => applyTemplate(t)}>
+								<span class="picker-item-name">{t.name}</span>
+								<span class="picker-item-meta">
+									{#if payer}
+										<span class="foyer-tag foyer-{payer.floor}">{payer.name}</span>
+									{/if}
+									{#if t.amount_default_cents > 0}
+										<span class="picker-item-amt">{formatEUR(t.amount_default_cents)}</span>
+									{:else}
+										<span class="picker-item-pending">à compléter</span>
+									{/if}
+								</span>
+							</button>
+						</li>
+					{/each}
+				</ul>
+				<footer class="picker-foot">
+					<a class="link" href="/templates">Gérer les modèles →</a>
+				</footer>
+			</div>
+		{/if}
 
 		<!-- ─── Modal sheet ─────────────────────────── -->
 		{#if modalOpen}
@@ -566,8 +1149,10 @@
 			<div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
 				<header class="modal-head">
 					<div>
-						<p class="modal-eyebrow">Nouvelle ligne</p>
-						<h2 id="modal-title">Inscrire une dépense</h2>
+						<p class="modal-eyebrow">{isEditing ? 'Édition' : 'Nouvelle ligne'}</p>
+						<h2 id="modal-title">
+							{isEditing ? 'Modifier la dépense' : 'Inscrire une dépense'}
+						</h2>
 					</div>
 					<button
 						class="modal-close"
@@ -825,6 +1410,84 @@
 						<input type="text" bind:value={note} placeholder="Référence, prestataire…" />
 					</label>
 
+					<fieldset class="attach-group">
+						<legend class="lbl">Pièces jointes</legend>
+						{#if isEditing && editingId}
+							{@const editingExp = renderedExpenses.find((e) => e.id === editingId)}
+							{#if editingExp && editingExp.attachments && editingExp.attachments.length > 0}
+								<ul class="attach-existing">
+									{#each editingExp.attachments as att (att.id)}
+										<li class="attach-existing-item">
+											<span class="attach-name" title={att.original_filename}>
+												{att.original_filename || att.id}
+											</span>
+											<span class="attach-size">{formatFileSize(att.size_bytes)}</span>
+											<button
+												type="button"
+												class="attach-mini"
+												onclick={() => editingExp && onViewAttachment(editingExp, att)}
+											>
+												Voir
+											</button>
+											<button
+												type="button"
+												class="attach-mini attach-mini-danger"
+												onclick={() => editingExp && onDeleteAttachment(editingExp, att)}
+												disabled={deletingAttachmentId !== null}
+											>
+												{deletingAttachmentId === att.id ? '…' : 'Retirer'}
+											</button>
+										</li>
+									{/each}
+								</ul>
+							{:else if !editingExp}
+								<p class="attach-hint" style="color: #b91c1c;">
+									Cette dépense a été supprimée ailleurs — les pièces jointes ne sont plus accessibles.
+								</p>
+							{/if}
+						{/if}
+						<label class="attach-picker">
+							<input
+								type="file"
+								accept={ATTACHMENT_ACCEPT}
+								capture="environment"
+								multiple
+								onchange={onPickFiles}
+								disabled={creating}
+							/>
+							<span class="attach-hint">
+								Ajouter une photo de reçu ou un PDF — 10 Mo max, jusqu'à {ATTACHMENT_MAX_PER_EXPENSE} fichiers.
+							</span>
+						</label>
+						{#if pendingFiles.length > 0}
+							<ul class="attach-queue">
+								{#each pendingFiles as file, i}
+									<li class="attach-queue-item" class:uploading={uploadingFileIdx === i}>
+										<span class="attach-name" title={file.name}>{file.name}</span>
+										<span class="attach-size">{formatFileSize(file.size)}</span>
+										{#if uploadingFileIdx === i}
+											<span class="attach-status">Téléversement…</span>
+										{:else if uploadingFileIdx !== null && i < uploadingFileIdx}
+											<span class="attach-status attach-status-ok">Envoyé</span>
+										{:else}
+											<button
+												type="button"
+												class="attach-mini"
+												onclick={() => removePendingFile(i)}
+												disabled={creating}
+											>
+												Retirer
+											</button>
+										{/if}
+									</li>
+								{/each}
+							</ul>
+						{/if}
+						{#if uploadError}
+							<p class="form-error" role="alert">{uploadError}</p>
+						{/if}
+					</fieldset>
+
 					{#if createError}
 						<p class="form-error" role="alert">{createError}</p>
 					{/if}
@@ -843,7 +1506,11 @@
 							class="btn-primary"
 							disabled={creating || !payerFoyerId || !categoryId}
 						>
-							{creating ? 'Enregistrement…' : 'Enregistrer'}
+							{#if creating}
+								{isEditing ? 'Mise à jour…' : 'Enregistrement…'}
+							{:else}
+								{isEditing ? 'Mettre à jour' : 'Enregistrer'}
+							{/if}
 						</button>
 					</div>
 				</form>
@@ -1311,6 +1978,71 @@
 		border-radius: 0.3rem;
 		border: 1px solid rgba(79, 110, 92, 0.2);
 	}
+	.row-pending {
+		font-size: 0.62rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.18em;
+		color: var(--accent-deep);
+		background: var(--accent-soft);
+		padding: 0.18rem 0.5rem;
+		border-radius: 0.3rem;
+		border: 1px solid var(--accent);
+	}
+	.row-template {
+		font-size: 0.6rem;
+		font-weight: 600;
+		text-transform: lowercase;
+		font-style: italic;
+		color: var(--ink-3);
+		background: var(--bg-warm);
+		padding: 0.16rem 0.45rem;
+		border-radius: 0.3rem;
+		border: 1px solid var(--hairline-2);
+	}
+	.row-amount-cta {
+		font-family: var(--display);
+		font-size: 0.95rem;
+		font-style: italic;
+		font-weight: 500;
+		color: var(--accent-deep);
+		background: var(--accent-soft);
+		border: 1px dashed var(--accent);
+		border-radius: 0.55rem;
+		padding: 0.4rem 0.85rem;
+		cursor: pointer;
+		transition:
+			background 160ms,
+			transform 160ms;
+		white-space: nowrap;
+	}
+	.row-amount-cta:hover {
+		background: var(--accent);
+		color: var(--bg);
+		transform: translateY(-1px);
+	}
+	.pending-banner {
+		display: flex;
+		align-items: center;
+		gap: 0.7rem;
+		padding: 0.7rem 1rem;
+		margin: 0 0 1rem;
+		background: var(--accent-soft);
+		border: 1px solid var(--accent);
+		border-radius: 0.65rem;
+		font-size: 0.85rem;
+		color: var(--accent-deep);
+	}
+	.pending-banner-glyph {
+		font-family: var(--display);
+		font-style: italic;
+		font-size: 1.15rem;
+		color: var(--accent);
+		flex-shrink: 0;
+	}
+	.pending-banner-text strong {
+		font-feature-settings: 'tnum';
+	}
 	.row-dates {
 		margin: 0.25rem 0 0;
 		display: flex;
@@ -1349,6 +2081,125 @@
 		height: 1rem;
 		accent-color: var(--ok);
 		margin: 0;
+	}
+
+	/* ─── Attach group (modal) ─── */
+	.attach-group {
+		border: 1px dashed var(--hairline-2);
+		border-radius: 0.7rem;
+		padding: 0.85rem 1rem;
+		margin: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.6rem;
+		background: var(--bg);
+	}
+	.attach-group legend {
+		padding: 0 0.4rem;
+	}
+	.attach-existing,
+	.attach-queue {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.3rem;
+	}
+	.attach-existing-item,
+	.attach-queue-item {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		padding: 0.35rem 0.55rem;
+		background: var(--surface);
+		border: 1px solid var(--hairline);
+		border-radius: 0.45rem;
+		font-size: 0.85rem;
+	}
+	.attach-queue-item.uploading {
+		border-color: var(--accent);
+		background: var(--accent-soft);
+	}
+	.attach-name {
+		flex: 1 1 auto;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		color: var(--ink);
+	}
+	.attach-size {
+		font-size: 0.72rem;
+		color: var(--ink-3);
+		font-feature-settings: 'tnum';
+		flex-shrink: 0;
+	}
+	.attach-status {
+		font-size: 0.7rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.12em;
+		color: var(--accent-deep);
+	}
+	.attach-status-ok {
+		color: var(--ok);
+	}
+	.attach-mini {
+		font-size: 0.7rem;
+		font-weight: 600;
+		color: var(--ink-2);
+		background: transparent;
+		border: 1px solid var(--hairline-2);
+		border-radius: 999px;
+		padding: 0.18rem 0.55rem;
+		cursor: pointer;
+	}
+	.attach-mini:hover:not(:disabled) {
+		background: var(--bg);
+		color: var(--ink);
+	}
+	.attach-mini:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+	.attach-mini-danger:hover:not(:disabled) {
+		color: var(--danger);
+		border-color: rgba(183, 50, 35, 0.3);
+		background: rgba(183, 50, 35, 0.06);
+	}
+	.attach-picker {
+		display: flex;
+		flex-direction: column;
+		gap: 0.35rem;
+	}
+	.attach-picker input[type='file'] {
+		font-family: var(--ui);
+		font-size: 0.85rem;
+		color: var(--ink-2);
+	}
+	.attach-picker input[type='file']::file-selector-button {
+		font-family: var(--ui);
+		font-size: 0.75rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.12em;
+		color: var(--ink-2);
+		background: var(--bg-warm);
+		border: 1px solid var(--hairline-2);
+		border-radius: 999px;
+		padding: 0.32rem 0.85rem;
+		margin-right: 0.6rem;
+		cursor: pointer;
+	}
+	.attach-picker input[type='file']::file-selector-button:hover {
+		background: var(--accent-soft);
+		color: var(--accent-deep);
+		border-color: var(--accent);
+	}
+	.attach-hint {
+		font-size: 0.72rem;
+		color: var(--ink-3);
 	}
 	.row-note {
 		font-size: 0.82rem;
@@ -1431,8 +2282,176 @@
 		text-align: right;
 		font-feature-settings: 'tnum' 1, 'lnum' 1;
 		font-variant-numeric: tabular-nums lining-nums;
-		align-self: center;
 		color: var(--ink);
+	}
+	.row-right {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-end;
+		gap: 0.4rem;
+		align-self: center;
+	}
+	.row-actions {
+		display: flex;
+		gap: 0.3rem;
+		opacity: 0;
+		transition: opacity 160ms ease;
+	}
+	.row:hover .row-actions,
+	.row:focus-within .row-actions {
+		opacity: 1;
+	}
+	@media (hover: none) {
+		/* Touch devices have no hover — keep the actions visible. */
+		.row-actions {
+			opacity: 1;
+		}
+	}
+	.row-action {
+		font-size: 0.66rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.18em;
+		color: var(--ink-2);
+		background: transparent;
+		border: 1px solid var(--hairline-2);
+		border-radius: 999px;
+		padding: 0.22rem 0.6rem;
+		cursor: pointer;
+		transition: background 160ms, color 160ms, border-color 160ms;
+	}
+	.row-action:hover:not(:disabled) {
+		background: var(--bg);
+		color: var(--ink);
+	}
+	.row-action:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+	.row-action-danger:hover:not(:disabled) {
+		background: rgba(183, 50, 35, 0.08);
+		color: var(--danger);
+		border-color: rgba(183, 50, 35, 0.3);
+	}
+
+	/* ─── Attachments: chip + drawer + thumbnails ─── */
+	.row-attach-chip {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.25rem;
+		font-size: 0.7rem;
+		font-weight: 600;
+		color: var(--ink-3);
+		background: transparent;
+		border: 1px solid var(--hairline-2);
+		border-radius: 999px;
+		padding: 0.18rem 0.55rem;
+		cursor: pointer;
+		transition:
+			background 160ms,
+			color 160ms,
+			border-color 160ms;
+	}
+	.row-attach-chip:hover,
+	.row-attach-chip[aria-expanded='true'] {
+		background: var(--accent-soft);
+		color: var(--accent-deep);
+		border-color: var(--accent);
+	}
+	.paperclip {
+		display: inline-block;
+		font-family: var(--display);
+		font-size: 0.95rem;
+		line-height: 1;
+		transform: rotate(-30deg);
+		font-style: italic;
+	}
+	.row-attach-count {
+		font-feature-settings: 'tnum';
+	}
+	.row-drawer {
+		grid-column: 1 / -1;
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+		gap: 0.7rem;
+		margin: 0.4rem 0 0.2rem;
+		padding: 0.7rem 0.9rem;
+		background: var(--bg-warm);
+		border: 1px solid var(--hairline);
+		border-radius: 0.7rem;
+	}
+	.att-card {
+		display: grid;
+		grid-template-columns: 80px 1fr;
+		grid-template-rows: auto auto;
+		gap: 0.45rem 0.7rem;
+		align-items: center;
+	}
+	.att-thumb {
+		width: 80px;
+		height: 80px;
+		border-radius: 0.5rem;
+		border: 1px solid var(--hairline);
+		background: var(--surface);
+		overflow: hidden;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: 0;
+		grid-row: span 2;
+		cursor: pointer;
+	}
+	.att-thumb img {
+		width: 100%;
+		height: 100%;
+		object-fit: cover;
+		display: block;
+	}
+	.att-thumb-loading {
+		background: linear-gradient(90deg, var(--bg-warm) 25%, var(--surface) 50%, var(--bg-warm) 75%);
+		background-size: 200% 100%;
+		animation: att-shimmer 1.1s linear infinite;
+	}
+	@keyframes att-shimmer {
+		0% { background-position: 200% 0; }
+		100% { background-position: -200% 0; }
+	}
+	.att-thumb-failed {
+		color: var(--danger);
+		font-weight: 700;
+		font-size: 1.5rem;
+	}
+	.att-thumb-pdf {
+		color: var(--clay);
+		background: var(--clay-soft);
+		font-family: var(--display);
+		font-weight: 600;
+		font-size: 0.95rem;
+		letter-spacing: 0.12em;
+		cursor: default;
+	}
+	.att-meta {
+		display: flex;
+		flex-direction: column;
+		gap: 0.15rem;
+		min-width: 0;
+	}
+	.att-meta-name {
+		font-size: 0.85rem;
+		color: var(--ink);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.att-meta-size {
+		font-size: 0.7rem;
+		color: var(--ink-3);
+		font-feature-settings: 'tnum';
+	}
+	.att-actions {
+		display: flex;
+		gap: 0.3rem;
+		align-self: end;
 	}
 
 	/* =========================================================
@@ -1583,6 +2602,181 @@
 	}
 	.fab-text {
 		white-space: nowrap;
+	}
+
+	.user-links {
+		display: flex;
+		gap: 0.6rem;
+		align-items: center;
+	}
+
+	/* ─── Chooser sheet (Vide / Depuis un modèle) ─── */
+	.chooser {
+		position: fixed;
+		left: 50%;
+		bottom: 1.4rem;
+		transform: translateX(-50%);
+		width: min(420px, calc(100vw - 2rem));
+		background: var(--surface);
+		border: 1px solid var(--hairline);
+		border-radius: 1rem;
+		box-shadow: 0 24px 60px rgba(20, 16, 12, 0.2);
+		z-index: 60;
+		display: flex;
+		flex-direction: column;
+		animation: slide-up 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+	}
+	@keyframes slide-up {
+		from { transform: translate(-50%, 16px); opacity: 0; }
+		to   { transform: translate(-50%, 0);    opacity: 1; }
+	}
+	.chooser-head {
+		padding: 1rem 1.2rem 0.4rem;
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+	}
+	.chooser-head h2 {
+		font-family: var(--display);
+		font-weight: 400;
+		font-size: 1.15rem;
+		margin: 0;
+	}
+	.chooser-body {
+		padding: 0.5rem 0.85rem 1rem;
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+	.chooser-opt {
+		display: flex;
+		align-items: center;
+		gap: 0.85rem;
+		padding: 0.85rem 1rem;
+		background: var(--bg);
+		border: 1px solid var(--hairline-2);
+		border-radius: 0.75rem;
+		text-align: left;
+		cursor: pointer;
+		transition:
+			background 160ms,
+			border-color 160ms,
+			transform 160ms;
+		font-family: var(--ui);
+		color: var(--ink);
+	}
+	.chooser-opt:hover {
+		background: var(--accent-soft);
+		border-color: var(--accent);
+		transform: translateY(-1px);
+	}
+	.chooser-opt-glyph {
+		font-family: var(--display);
+		font-size: 1.5rem;
+		line-height: 1;
+		color: var(--accent);
+		font-style: italic;
+		flex-shrink: 0;
+		width: 1.6rem;
+		text-align: center;
+	}
+	.chooser-opt-text {
+		display: flex;
+		flex-direction: column;
+		gap: 0.15rem;
+		min-width: 0;
+	}
+	.chooser-opt-text strong {
+		font-weight: 600;
+		font-size: 0.95rem;
+	}
+	.chooser-opt-text small {
+		font-size: 0.78rem;
+		color: var(--ink-3);
+	}
+
+	/* ─── Template picker sheet ─── */
+	.picker {
+		position: fixed;
+		left: 50%;
+		top: 50%;
+		transform: translate(-50%, -50%);
+		width: min(480px, calc(100vw - 2rem));
+		max-height: calc(100vh - 2rem);
+		background: var(--surface);
+		border: 1px solid var(--hairline);
+		border-radius: 1rem;
+		box-shadow: 0 24px 60px rgba(20, 16, 12, 0.2);
+		z-index: 60;
+		display: flex;
+		flex-direction: column;
+		animation: fade-in 220ms ease;
+	}
+	.picker-head {
+		padding: 1rem 1.2rem 0.4rem;
+		display: flex;
+		align-items: flex-start;
+		justify-content: space-between;
+		gap: 1rem;
+	}
+	.picker-head h2 {
+		font-family: var(--display);
+		font-weight: 400;
+		font-size: 1.3rem;
+		margin: 0;
+	}
+	.picker-list {
+		list-style: none;
+		margin: 0;
+		padding: 0.4rem 0.85rem;
+		overflow: auto;
+		max-height: 60vh;
+		display: flex;
+		flex-direction: column;
+		gap: 0.35rem;
+	}
+	.picker-item {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 0.3rem;
+		padding: 0.7rem 0.85rem;
+		background: var(--bg);
+		border: 1px solid var(--hairline-2);
+		border-radius: 0.65rem;
+		cursor: pointer;
+		font-family: var(--ui);
+		color: var(--ink);
+		text-align: left;
+		width: 100%;
+	}
+	.picker-item:hover {
+		background: var(--accent-soft);
+		border-color: var(--accent);
+	}
+	.picker-item-name {
+		font-weight: 600;
+		font-size: 0.95rem;
+	}
+	.picker-item-meta {
+		display: flex;
+		align-items: center;
+		gap: 0.55rem;
+		flex-wrap: wrap;
+		font-size: 0.78rem;
+		color: var(--ink-3);
+	}
+	.picker-item-amt {
+		font-feature-settings: 'tnum';
+		color: var(--ink-2);
+	}
+	.picker-item-pending {
+		font-style: italic;
+		color: var(--accent);
+	}
+	.picker-foot {
+		padding: 0.7rem 1.2rem 1rem;
+		text-align: right;
 	}
 
 	/* =========================================================

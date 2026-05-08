@@ -1,4 +1,13 @@
 {
-	"indexes": [],
+	"indexes": [
+		{
+			"collectionGroup": "expense_templates",
+			"queryScope": "COLLECTION",
+			"fields": [
+				{ "fieldPath": "schedule_active", "order": "ASCENDING" },
+				{ "fieldPath": "next_occurrence_at", "order": "ASCENDING" }
+			]
+		}
+	],
 	"fieldOverrides": []
 }

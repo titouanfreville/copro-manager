@@ -24,3 +24,24 @@ variable "web_domain" {
   type        = string
   default     = ""
 }
+
+variable "admin_api_key" {
+  description = <<-EOT
+    Shared secret for the /admin/* endpoints. Cloud Scheduler attaches this
+    in the Authorization header when calling the daily materialization
+    endpoint. Must match middlewares.admin_api_key on the server side
+    (configured via the Cloud Run config-file mechanism, see AGENTS.md).
+    Leave empty to disable scheduled materialization (the lazy on-load
+    path on /expenses still works). Stored sensitive — do not commit
+    terraform.tfvars with a non-empty value.
+  EOT
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "scheduler_cron" {
+  description = "Cron schedule for the daily materialization job. Defaults to 06:00 Europe/Paris."
+  type        = string
+  default     = "0 6 * * *"
+}

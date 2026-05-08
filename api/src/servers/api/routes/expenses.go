@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/titouanfreville/copro-manager/api/src/core/rest"
 	"github.com/titouanfreville/copro-manager/api/src/domain/entities"
 	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/expenses"
@@ -25,6 +27,8 @@ type createExpenseRequest struct {
 	Settled          bool   `json:"settled,omitempty"`
 	SettledAt        string `json:"settled_at,omitempty"`
 	Note             string `json:"note,omitempty"`
+	TemplateID       string `json:"template_id,omitempty"`
+	AmountPending    bool   `json:"amount_pending,omitempty"`
 }
 
 // CreateExpense handles POST /expenses.
@@ -68,6 +72,8 @@ func (e *Endpoints) CreateExpense(w http.ResponseWriter, r *http.Request) {
 		Settled:          req.Settled,
 		SettledAt:        settledAt,
 		Note:             req.Note,
+		TemplateID:       req.TemplateID,
+		AmountPending:    req.AmountPending,
 	})
 	if err != nil {
 		status, body := routeerrors.ManageErrors(err)
@@ -76,6 +82,83 @@ func (e *Endpoints) CreateExpense(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rest.Render().JSON(http.StatusCreated, w, r, exp)
+}
+
+// UpdateExpense handles PATCH /expenses/{id}.
+func (e *Endpoints) UpdateExpense(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		rest.Render().JSON(http.StatusBadRequest, w, r, routeerrors.NewServErrors("INVALID_ID", "missing expense id"))
+		return
+	}
+
+	var req createExpenseRequest
+	if err := rest.Bind().JSONData(r, &req); err != nil {
+		rest.Render().JSON(http.StatusBadRequest, w, r, routeerrors.NewServErrors("INVALID_BODY", "invalid JSON body"))
+		return
+	}
+
+	date, err := parseDateOrNil(req.Date)
+	if err != nil {
+		rest.Render().JSON(http.StatusBadRequest, w, r, routeerrors.NewServErrors("INVALID_DATE", "date must be RFC3339 or YYYY-MM-DD"))
+		return
+	}
+	paymentDate, err := parseDateOrNilPtr(req.PaymentDate)
+	if err != nil {
+		rest.Render().JSON(http.StatusBadRequest, w, r, routeerrors.NewServErrors("INVALID_DATE", "payment_date must be RFC3339 or YYYY-MM-DD"))
+		return
+	}
+	settledAt, err := parseDateOrNilPtr(req.SettledAt)
+	if err != nil {
+		rest.Render().JSON(http.StatusBadRequest, w, r, routeerrors.NewServErrors("INVALID_DATE", "settled_at must be RFC3339 or YYYY-MM-DD"))
+		return
+	}
+
+	actorUID, _ := r.Context().Value(shared.UserID).(string)
+
+	exp, err := e.usecases.Expenses.Update(r.Context(), id, expenses.CreateInput{
+		ActorUserID:      actorUID,
+		Name:             req.Name,
+		AmountCents:      req.AmountCents,
+		Currency:         req.Currency,
+		Date:             date,
+		PaymentDate:      paymentDate,
+		PayerFoyerID:     req.PayerFoyerID,
+		CategoryID:       req.CategoryID,
+		DistributionMode: entities.DistributionMode(req.DistributionMode),
+		ShareRDCCents:    req.ShareRDCCents,
+		Share1erCents:    req.Share1erCents,
+		Settled:          req.Settled,
+		SettledAt:        settledAt,
+		Note:             req.Note,
+		TemplateID:       req.TemplateID,
+		AmountPending:    req.AmountPending,
+	})
+	if err != nil {
+		status, body := routeerrors.ManageErrors(err)
+		rest.Render().JSON(status, w, r, body)
+		return
+	}
+
+	rest.Render().JSON(http.StatusOK, w, r, exp)
+}
+
+// DeleteExpense handles DELETE /expenses/{id}.
+func (e *Endpoints) DeleteExpense(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		rest.Render().JSON(http.StatusBadRequest, w, r, routeerrors.NewServErrors("INVALID_ID", "missing expense id"))
+		return
+	}
+
+	actorUID, _ := r.Context().Value(shared.UserID).(string)
+	if err := e.usecases.Expenses.Delete(r.Context(), id, actorUID); err != nil {
+		status, body := routeerrors.ManageErrors(err)
+		rest.Render().JSON(status, w, r, body)
+		return
+	}
+
+	rest.Render().NoContent(http.StatusNoContent, w)
 }
 
 // parseDateOrNil accepts either RFC3339 or a bare YYYY-MM-DD. Empty input

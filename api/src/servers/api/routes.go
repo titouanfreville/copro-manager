@@ -18,6 +18,8 @@ func (transport *API) initRoutes(r chi.Router) {
 		adminRouter.Post("/foyers/{id}/members", transport.endpoints.AdminAddFoyerMember)
 		adminRouter.Post("/expenses/import", transport.endpoints.AdminImportExpenses)
 		adminRouter.Post("/users/{id}/reset-password", transport.endpoints.AdminResetUserPassword)
+		// Cloud Scheduler hits this daily. Idempotent.
+		adminRouter.Post("/expense-templates/materialize-recurring", transport.endpoints.AdminMaterializeRecurring)
 	})
 
 	// Foyer-facing routes — Bearer Firebase ID token required. Reads run
@@ -27,6 +29,21 @@ func (transport *API) initRoutes(r chi.Router) {
 	r.Group(func(authed chi.Router) {
 		authed.Use(middlewares.RequireAuth)
 		authed.Post("/expenses", transport.endpoints.CreateExpense)
+		authed.Patch("/expenses/{id}", transport.endpoints.UpdateExpense)
+		authed.Delete("/expenses/{id}", transport.endpoints.DeleteExpense)
+
+		authed.Post("/expenses/{id}/attachments/upload-url", transport.endpoints.RequestAttachmentUploadURL)
+		authed.Post("/expenses/{id}/attachments", transport.endpoints.RecordAttachment)
+		authed.Get("/expenses/{id}/attachments/{attID}/download-url", transport.endpoints.GetAttachmentDownloadURL)
+		authed.Delete("/expenses/{id}/attachments/{attID}", transport.endpoints.DeleteAttachment)
+
+		authed.Get("/templates", transport.endpoints.ListTemplates)
+		authed.Post("/templates", transport.endpoints.CreateTemplate)
+		authed.Patch("/templates/{id}", transport.endpoints.UpdateTemplate)
+		authed.Delete("/templates/{id}", transport.endpoints.DeleteTemplate)
+		// Lazy materialization — frontend fires on /expenses mount as a
+		// backstop to the daily Cloud Scheduler cron.
+		authed.Post("/expenses/materialize-recurring", transport.endpoints.MaterializeRecurring)
 	})
 
 	r.NotFound(transport.endpoints.NotFound)

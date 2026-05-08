@@ -16,6 +16,8 @@ interface ApiOptions {
 	method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 	body?: unknown;
 	headers?: Record<string, string>;
+	/** Optional AbortSignal so callers can cancel an in-flight request. */
+	signal?: AbortSignal;
 }
 
 export interface Foyer {
@@ -42,6 +44,56 @@ export interface Category {
 
 export type DistributionMode = 'equal' | 'tantiemes' | 'custom';
 
+export type Frequency = 'monthly' | 'quarterly' | 'yearly';
+
+export interface ExpenseTemplate {
+	id: string;
+	copro_id: string;
+	name: string;
+	amount_default_cents: number;
+	currency: string;
+	category_id: string;
+	payer_foyer_id: string;
+	distribution_mode: DistributionMode;
+	share_rdc_cents?: number;
+	share_1er_cents?: number;
+	note?: string;
+	schedule_active: boolean;
+	frequency?: Frequency;
+	day_of_month?: number;
+	next_occurrence_at?: string;
+	end_date?: string;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface CreateTemplateInput {
+	name: string;
+	amount_default_cents: number;
+	currency?: string;
+	category_id: string;
+	payer_foyer_id: string;
+	distribution_mode: DistributionMode;
+	share_rdc_cents?: number;
+	share_1er_cents?: number;
+	note?: string;
+	schedule_active?: boolean;
+	frequency?: Frequency;
+	day_of_month?: number;
+	start_date?: string;
+	end_date?: string;
+}
+
+export interface Attachment {
+	id: string;
+	object_name: string;
+	content_type: string;
+	size_bytes: number;
+	original_filename: string;
+	uploaded_at: string;
+	uploaded_by: string;
+}
+
 export interface Expense {
 	id: string;
 	copro_id: string;
@@ -58,6 +110,9 @@ export interface Expense {
 	settled: boolean;
 	settled_at?: string;
 	note?: string;
+	attachments?: Attachment[];
+	template_id?: string;
+	amount_pending?: boolean;
 	created_at: string;
 	updated_at: string;
 }
@@ -76,6 +131,8 @@ export interface CreateExpenseInput {
 	settled?: boolean;
 	settled_at?: string;
 	note?: string;
+	template_id?: string;
+	amount_pending?: boolean;
 }
 
 export async function api<T>(path: string, opts: ApiOptions = {}): Promise<T> {
@@ -97,6 +154,7 @@ export async function api<T>(path: string, opts: ApiOptions = {}): Promise<T> {
 	const res = await fetch(`${PUBLIC_API_BASE_URL}${path}`, {
 		method: opts.method ?? 'GET',
 		headers,
+		signal: opts.signal,
 		body:
 			opts.body === undefined
 				? undefined

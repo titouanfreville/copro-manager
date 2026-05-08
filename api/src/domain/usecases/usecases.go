@@ -9,6 +9,7 @@ import (
 	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/expenses"
 	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/foyers"
 	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/home"
+	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/templates"
 	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/users"
 )
 
@@ -21,6 +22,7 @@ type Usecases struct {
 	Users      users.Usecases
 	Categories categories.Usecases
 	Expenses   expenses.Usecases
+	Templates  templates.Usecases
 }
 
 // New creates the root usecases aggregator.
@@ -31,6 +33,7 @@ func New(
 	initUsers users.Usecases,
 	initCategories categories.Usecases,
 	initExpenses expenses.Usecases,
+	initTemplates templates.Usecases,
 ) *Usecases {
 	return &Usecases{
 		logger:     logger.Named("usecases"),
@@ -40,6 +43,7 @@ func New(
 		Users:      initUsers,
 		Categories: initCategories,
 		Expenses:   initExpenses,
+		Templates:  initTemplates,
 	}
 }
 
