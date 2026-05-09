@@ -54,6 +54,10 @@ func (m *mockExpensesStore) Update(ctx context.Context, e entities.Expense) erro
 func (m *mockExpensesStore) Delete(ctx context.Context, id string) error {
 	return m.Called(ctx, id).Error(0)
 }
+func (m *mockExpensesStore) CountByCategory(ctx context.Context, categoryID string) (int, error) {
+	args := m.Called(ctx, categoryID)
+	return args.Int(0), args.Error(1)
+}
 
 type mockAttachmentsStore struct{ mock.Mock }
 
@@ -151,6 +155,15 @@ func (m *mockCategoriesStore) FindByID(ctx context.Context, id string) (*entitie
 }
 func (m *mockCategoriesStore) EnsureSeeded(ctx context.Context, seed []entities.Category) error {
 	return m.Called(ctx, seed).Error(0)
+}
+func (m *mockCategoriesStore) Create(ctx context.Context, c entities.Category) error {
+	return m.Called(ctx, c).Error(0)
+}
+func (m *mockCategoriesStore) Update(ctx context.Context, c entities.Category) error {
+	return m.Called(ctx, c).Error(0)
+}
+func (m *mockCategoriesStore) Delete(ctx context.Context, id string) error {
+	return m.Called(ctx, id).Error(0)
 }
 
 type mockStorage struct{ mock.Mock }

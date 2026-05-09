@@ -115,6 +115,17 @@ type Usecases interface {
 	DeleteAttachment(ctx context.Context, expenseID, attachmentID, actorUserID string) error
 }
 
+// AlertsHook is the narrow contract this package needs from the alerts
+// usecase. Defined here (not imported from `usecases/alerts`) so the
+// expenses package stays a leaf — Go's structural typing lets the real
+// alerts.Usecases value satisfy this interface automatically.
+type AlertsHook interface {
+	FirePeerExpenseAdded(ctx context.Context, exp entities.Expense, recipientFoyerID string) (*entities.Alert, error)
+	ResolveMissingReceipt(ctx context.Context, expenseID string) error
+	ResolvePendingCompletion(ctx context.Context, expenseID string) error
+	ResolveByExpense(ctx context.Context, expenseID string) error
+}
+
 type usecases struct {
 	logger      *zap.Logger
 	expenses    interfaces.ExpensesStore
@@ -123,10 +134,13 @@ type usecases struct {
 	copros      interfaces.CoprosStore
 	categories  interfaces.CategoriesStore
 	storage     interfaces.StorageService
+	settlements interfaces.SettlementsStore
+	alerts      AlertsHook
 	now         func() time.Time
 }
 
-// New builds an expenses usecase.
+// New builds an expenses usecase. `alerts` may be nil during local dev
+// or in tests — every hook call is guarded.
 func New(
 	logger *zap.Logger,
 	expenses interfaces.ExpensesStore,
@@ -135,6 +149,8 @@ func New(
 	copros interfaces.CoprosStore,
 	categories interfaces.CategoriesStore,
 	storage interfaces.StorageService,
+	settlements interfaces.SettlementsStore,
+	alerts AlertsHook,
 ) Usecases {
 	return &usecases{
 		logger:      logger.Named("usecases.expenses"),
@@ -144,6 +160,8 @@ func New(
 		copros:      copros,
 		categories:  categories,
 		storage:     storage,
+		settlements: settlements,
+		alerts:      alerts,
 		now:         time.Now,
 	}
 }
@@ -237,8 +255,47 @@ func (uc *usecases) Create(ctx context.Context, in CreateInput) (*entities.Expen
 		return nil, fmt.Errorf("create expense: %w", err)
 	}
 
+	// peer_expense_added: only when an actual foyer member created this
+	// row (cron / CSV import / template materializer all pass empty
+	// ActorUserID and shouldn't fan out a "the other foyer added X"
+	// alert that would in fact be coming from the system).
+	if uc.alerts != nil && in.ActorUserID != "" && !exp.AmountPending {
+		// PayerFoyerID is the foyer that fronted the expense; the alert
+		// goes to whichever foyer the actor isn't a member of. Whether
+		// the actor records their OWN payment or one fronted by the
+		// neighbors, the non-actor foyer is the right recipient.
+		recipient := otherFoyerID(in.ActorUserID, rdc, premier)
+		if recipient != "" {
+			if _, err := uc.alerts.FirePeerExpenseAdded(ctx, exp, recipient); err != nil {
+				log.Warn("peer alert fire failed", zap.Error(err))
+			}
+		}
+	}
+
 	log.Info("Success", zap.String("expense_id", exp.ID))
 	return &exp, nil
+}
+
+// otherFoyerID returns the ID of the foyer the actor does NOT belong to.
+// Returns "" when the actor isn't a member of either foyer or when one of
+// the foyer pointers is nil (defense-in-depth — the auth check in Create
+// already filters these cases, but a future caller path could expose the
+// nil-deref).
+func otherFoyerID(actorUserID string, rdc, premier *entities.Foyer) string {
+	if rdc == nil || premier == nil || actorUserID == "" {
+		return ""
+	}
+	for _, mid := range rdc.MemberIDs {
+		if mid == actorUserID {
+			return premier.ID
+		}
+	}
+	for _, mid := range premier.MemberIDs {
+		if mid == actorUserID {
+			return rdc.ID
+		}
+	}
+	return ""
 }
 
 // normalizeSettledAt enforces the invariant: SettledAt is only meaningful
@@ -349,9 +406,18 @@ func (uc *usecases) Update(ctx context.Context, id string, in CreateInput) (*ent
 	existing.AmountPending = in.AmountPending
 	existing.UpdatedAt = now
 
+	wasPending := existing.AmountPending && !in.AmountPending
 	if err := uc.expenses.Update(ctx, *existing); err != nil {
 		log.Error("update failed", zap.Error(err))
 		return nil, fmt.Errorf("update expense: %w", err)
+	}
+
+	// pending_completion: resolve when the row transitioned from
+	// pending → confirmed in this Update. Best-effort.
+	if uc.alerts != nil && wasPending {
+		if err := uc.alerts.ResolvePendingCompletion(ctx, existing.ID); err != nil {
+			log.Warn("resolve pending alert failed", zap.Error(err))
+		}
 	}
 
 	log.Info("Success")
@@ -423,6 +489,24 @@ func (uc *usecases) Delete(ctx context.Context, id, actorUserID string) error {
 	if err := uc.expenses.Delete(ctx, id); err != nil {
 		log.Error("delete failed", zap.Error(err))
 		return fmt.Errorf("delete expense: %w", err)
+	}
+
+	// Cascade-prune any settlement that was audit-linking this expense.
+	// Best-effort: a transient failure leaves a dangling reference, which
+	// the next prune call would clean up.
+	if uc.settlements != nil {
+		if err := uc.settlements.PruneExpense(ctx, id); err != nil {
+			log.Warn("settlement link prune failed (dangling reference may remain)", zap.Error(err))
+		}
+	}
+
+	// Resolve every alert that referenced this expense — missing_receipt
+	// stages, pending_completion, peer_expense_added all become moot once
+	// the row is gone.
+	if uc.alerts != nil {
+		if err := uc.alerts.ResolveByExpense(ctx, id); err != nil {
+			log.Warn("alert auto-resolve failed", zap.Error(err))
+		}
 	}
 
 	log.Info("Success")

@@ -1,8 +1,12 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { ApiError } from '$lib/api';
-	import { authState, logout } from '$lib/auth';
+	import { authState } from '$lib/auth';
+	import Button from '$lib/components/Button.svelte';
+	import Fab from '$lib/components/Fab.svelte';
+	import IconButton from '$lib/components/IconButton.svelte';
 	import { computeBalance } from '$lib/balance';
+	import { formatDate } from '$lib/format';
 	import {
 		ATTACHMENT_ACCEPT,
 		ATTACHMENT_MAX_BYTES,
@@ -21,16 +25,25 @@
 		subscribeCategories,
 		subscribeExpenses,
 		subscribeFoyers,
+		subscribeSettlements,
 		subscribeTemplates,
 		type ExpenseAttachment
 	} from '$lib/live';
+	import { createCategory } from '$lib/categories';
+	import {
+		createSettlement,
+		deleteSettlement,
+		updateSettlement
+	} from '$lib/settlements';
 	import type {
 		Attachment,
 		Category,
+		CreateSettlementInput,
 		DistributionMode,
 		Expense,
 		ExpenseTemplate,
-		Foyer
+		Foyer,
+		Settlement
 	} from '$lib/api';
 
 	// ─────────────────────────────────────────────────────────────
@@ -40,6 +53,7 @@
 	let categories = $state<Category[]>([]);
 	let expenses = $state<Expense[]>([]);
 	let templates = $state<ExpenseTemplate[]>([]);
+	let settlements = $state<Settlement[]>([]);
 	let liveError = $state('');
 	let foyersReady = $state(false);
 	let categoriesReady = $state(false);
@@ -80,6 +94,166 @@
 	// shown one at a time when the user taps the FAB.
 	let chooserOpen = $state(false);
 	let pickerOpen = $state(false);
+
+	// ─── Filters + search ──────────────────────────────────────────
+	type FilterType = 'all' | 'expenses' | 'settlements';
+	type FilterState = 'all' | 'pending' | 'settled' | 'paired';
+	type LedgerFilters = {
+		from: string;
+		to: string;
+		categories: string[];
+		payers: string[];
+		modes: DistributionMode[];
+		type: FilterType;
+		state: FilterState;
+	};
+	const emptyFilters: LedgerFilters = {
+		from: '',
+		to: '',
+		categories: [],
+		payers: [],
+		modes: [],
+		type: 'all',
+		state: 'all'
+	};
+	let filters = $state<LedgerFilters>({ ...emptyFilters });
+	let searchQuery = $state('');
+	let debouncedQuery = $state('');
+	let filtersOpen = $state(false);
+
+	// Debounce typing → filter pipeline so the user doesn't see flicker on
+	// every keystroke.
+	$effect(() => {
+		const q = searchQuery;
+		const t = setTimeout(() => (debouncedQuery = q), 250);
+		return () => clearTimeout(t);
+	});
+
+	// One-shot hydration from the URL on the first browser render. We read
+	// `window.location` (not the reactive $page store) so writing back via
+	// `history.replaceState` doesn't trip the effect into a loop.
+	$effect(() => {
+		if (typeof window === 'undefined') return;
+		const sp = new URL(window.location.href).searchParams;
+		filters = {
+			from: sp.get('from') ?? '',
+			to: sp.get('to') ?? '',
+			categories: splitParam(sp.get('cat')),
+			payers: splitParam(sp.get('payer')),
+			modes: splitParam(sp.get('mode')) as DistributionMode[],
+			type: parseFilterType(sp.get('type')),
+			state: parseFilterState(sp.get('state'))
+		};
+		searchQuery = sp.get('q') ?? '';
+		// Run-once: deps are intentionally not touched, this fires only on
+		// component mount because the body has no reactive reads.
+	});
+
+	// Mirror filter state back to the URL so the view is shareable. Writes
+	// via raw `history.replaceState` to bypass SvelteKit navigation —
+	// reading `window.location` keeps this effect independent of $page.
+	$effect(() => {
+		if (typeof window === 'undefined') return;
+		const params = new URLSearchParams();
+		if (filters.from) params.set('from', filters.from);
+		if (filters.to) params.set('to', filters.to);
+		if (filters.categories.length) params.set('cat', filters.categories.join(','));
+		if (filters.payers.length) params.set('payer', filters.payers.join(','));
+		if (filters.modes.length) params.set('mode', filters.modes.join(','));
+		if (filters.type !== 'all') params.set('type', filters.type);
+		if (filters.state !== 'all') params.set('state', filters.state);
+		if (debouncedQuery) params.set('q', debouncedQuery);
+		const url = new URL(window.location.href);
+		const next = params.toString();
+		if (url.search.replace(/^\?/, '') !== next) {
+			url.search = next;
+			window.history.replaceState(null, '', url);
+		}
+	});
+
+	function splitParam(raw: string | null): string[] {
+		if (!raw) return [];
+		return raw.split(',').filter(Boolean);
+	}
+	function parseFilterType(raw: string | null): FilterType {
+		return raw === 'expenses' || raw === 'settlements' ? raw : 'all';
+	}
+	function parseFilterState(raw: string | null): FilterState {
+		return raw === 'pending' || raw === 'settled' || raw === 'paired' ? raw : 'all';
+	}
+
+	function toggleInArray<T>(arr: T[], value: T): T[] {
+		return arr.includes(value) ? arr.filter((x) => x !== value) : [...arr, value];
+	}
+	function resetFilters() {
+		filters = { ...emptyFilters };
+		searchQuery = '';
+	}
+	let activeFilterCount = $derived.by(() => {
+		let n = 0;
+		if (filters.from) n++;
+		if (filters.to) n++;
+		n += filters.categories.length;
+		n += filters.payers.length;
+		n += filters.modes.length;
+		if (filters.type !== 'all') n++;
+		if (filters.state !== 'all') n++;
+		if (debouncedQuery) n++;
+		return n;
+	});
+
+	// Inline category creator (when none of the existing options matches).
+	let inlineCatCreating = $state(false);
+	let inlineCatName = $state('');
+	let inlineCatSaving = $state(false);
+	let inlineCatError = $state('');
+
+	function openInlineCat() {
+		inlineCatCreating = true;
+		inlineCatName = '';
+		inlineCatError = '';
+	}
+	function closeInlineCat() {
+		inlineCatCreating = false;
+		inlineCatName = '';
+		inlineCatError = '';
+	}
+	async function confirmInlineCat() {
+		if (inlineCatSaving) return;
+		const name = inlineCatName.trim();
+		if (name.length < 2) {
+			inlineCatError = 'Au moins 2 caractères.';
+			return;
+		}
+		inlineCatSaving = true;
+		try {
+			const c = await createCategory({ name });
+			categoryId = c.id;
+			closeInlineCat();
+		} catch (err) {
+			inlineCatError = err instanceof ApiError ? `${err.code}: ${err.message}` : String(err);
+		} finally {
+			inlineCatSaving = false;
+		}
+	}
+
+	// ─── Settlement modal state ──────────────────────────────────
+	let settlementModalOpen = $state(false);
+	let editingSettlementId = $state<string | null>(null);
+	let isEditingSettlement = $derived(editingSettlementId !== null);
+	let savingSettlement = $state(false);
+	let settlementError = $state('');
+	let deletingSettlementId = $state<string | null>(null);
+	let settleFromFoyerId = $state('');
+	let settleToFoyerId = $state('');
+	let settleAmountEuros = $state('');
+	let settleDate = $state(new Date().toISOString().slice(0, 10));
+	let settleNote = $state('');
+	let settleLinkedExpenseIds = $state<string[]>([]);
+	// Inline guard: from === to is a usage error; the API also rejects.
+	let settleSameFoyer = $derived(
+		settleFromFoyerId !== '' && settleFromFoyerId === settleToFoyerId
+	);
 
 	// ─── Attachments ──────────────────────────────────────────────
 	// `pendingFiles`: queued File objects in the modal; uploaded after the
@@ -322,6 +496,9 @@
 					(grouped[a.expense_id] ||= []).push(a);
 				}
 				attachmentsByExpense = grouped;
+			}, onErr),
+			subscribeSettlements((rows) => {
+				settlements = rows;
 			}, onErr)
 		];
 
@@ -460,7 +637,27 @@
 	// Net balance from RDC's perspective. Positive → 1er owes RDC.
 	// Shared with the global chrome via $lib/balance — settled rows are
 	// excluded both places.
-	let balance = $derived(computeBalance(expenses, foyers));
+	let balance = $derived(computeBalance(expenses, settlements, foyers));
+
+	// ─── Ledger merge: expenses + settlements ──────────────────
+	// LedgerRow is a discriminated union so the row template can branch on
+	// `kind`. Both row types carry a `date` and `created_at` for sort
+	// stability across kinds.
+	type LedgerRow =
+		| {
+				kind: 'expense';
+				date: string;
+				created_at: string;
+				id: string;
+				expense: Expense & { attachments: Attachment[] };
+		  }
+		| {
+				kind: 'settlement';
+				date: string;
+				created_at: string;
+				id: string;
+				settlement: Settlement;
+		  };
 
 	let groupedExpenses = $derived.by(() => {
 		const map = new Map<string, Expense[]>();
@@ -476,8 +673,141 @@
 		return Array.from(map.entries());
 	});
 
-	let monthCount = $derived(groupedExpenses.length);
-	let totalCount = $derived(expenses.length);
+	// Flat merged rows BEFORE filtering — keeps filter logic decoupled
+	// from grouping and makes the unfiltered total available for empty
+	// states ("filtres actifs, aucune ligne").
+	let mergedRows = $derived.by(() => {
+		const rows: LedgerRow[] = [];
+		for (const e of renderedExpenses) {
+			rows.push({
+				kind: 'expense',
+				date: e.date,
+				created_at: e.created_at,
+				id: e.id,
+				expense: e
+			});
+		}
+		for (const s of settlements) {
+			rows.push({
+				kind: 'settlement',
+				date: s.date,
+				created_at: s.created_at,
+				id: s.id,
+				settlement: s
+			});
+		}
+		rows.sort((a, b) => {
+			if (a.date !== b.date) return b.date.localeCompare(a.date);
+			return b.created_at.localeCompare(a.created_at);
+		});
+		return rows;
+	});
+
+	let filteredRows = $derived.by(() =>
+		applyFilters(mergedRows, filters, debouncedQuery, linkedSettlementByExpense)
+	);
+
+	let groupedRows = $derived.by(() => {
+		const map = new Map<string, LedgerRow[]>();
+		for (const r of filteredRows) {
+			const key = r.date.slice(0, 7);
+			const arr = map.get(key) ?? [];
+			arr.push(r);
+			map.set(key, arr);
+		}
+		return Array.from(map.entries());
+	});
+
+	// Pure filter pipeline — extracted so the typing is explicit and so
+	// any future test harness can hit it without booting the page.
+	function applyFilters(
+		rows: LedgerRow[],
+		f: LedgerFilters,
+		q: string,
+		linkedMap: Record<string, Settlement>
+	): LedgerRow[] {
+		const numericQ = parseNumericQuery(q);
+		const textQ = q.trim().toLocaleLowerCase('fr');
+		const fromTs = f.from ? Date.parse(f.from + 'T00:00:00') : NaN;
+		const toTs = f.to ? Date.parse(f.to + 'T23:59:59') : NaN;
+		const out: LedgerRow[] = [];
+		for (const r of rows) {
+			// Type
+			if (f.type === 'expenses' && r.kind !== 'expense') continue;
+			if (f.type === 'settlements' && r.kind !== 'settlement') continue;
+			// Date range (uses the row.date which is ISO YYYY-MM-DD…)
+			const rowTs = Date.parse(r.date);
+			if (!Number.isNaN(fromTs) && rowTs < fromTs) continue;
+			if (!Number.isNaN(toTs) && rowTs > toTs) continue;
+			// Filters that only apply to expense rows
+			if (r.kind === 'expense') {
+				const e = r.expense;
+				if (f.categories.length && !f.categories.includes(e.category_id)) continue;
+				if (f.payers.length && !f.payers.includes(e.payer_foyer_id)) continue;
+				if (f.modes.length && !f.modes.includes(e.distribution_mode)) continue;
+				if (f.state === 'pending' && !e.amount_pending) continue;
+				if (f.state === 'settled' && !e.settled) continue;
+				if (f.state === 'paired' && !linkedMap[e.id]) continue;
+			} else {
+				// State filter on settlement rows: only "all" makes sense;
+				// pending/settled/paired are expense-only — drop settlements
+				// when those are active so the listing stays coherent.
+				if (f.state !== 'all') continue;
+				if (f.categories.length || f.payers.length || f.modes.length) continue;
+			}
+			// Search (numeric ∪ text)
+			if (q.trim()) {
+				if (!matchesSearch(r, numericQ, textQ)) continue;
+			}
+			out.push(r);
+		}
+		return out;
+	}
+
+	function parseNumericQuery(q: string): number | null {
+		const trimmed = q.trim().replace(/\s/g, '');
+		if (!trimmed) return null;
+		const n = Number(trimmed.replace(',', '.'));
+		return Number.isFinite(n) ? n : null;
+	}
+
+	function matchesSearch(r: LedgerRow, numericQ: number | null, textQ: string): boolean {
+		if (numericQ !== null) {
+			const cents = Math.round(numericQ * 100);
+			if (r.kind === 'expense') {
+				const e = r.expense;
+				if (e.amount_cents === cents) return true;
+				if (e.share_rdc_cents === cents) return true;
+				if (e.share_1er_cents === cents) return true;
+			} else {
+				if (r.settlement.amount_cents === cents) return true;
+			}
+		}
+		if (textQ) {
+			if (r.kind === 'expense') {
+				const e = r.expense;
+				const hay = (e.name + ' ' + (e.note ?? '')).toLocaleLowerCase('fr');
+				if (hay.includes(textQ)) return true;
+			} else {
+				const hay = (r.settlement.note ?? '').toLocaleLowerCase('fr');
+				if (hay.includes(textQ)) return true;
+			}
+		}
+		return false;
+	}
+
+	// Reverse index: expense_id → linking Settlement (or null). Used by the
+	// per-row pairing chip and to filter the linked-expenses picker.
+	let linkedSettlementByExpense = $derived.by(() => {
+		const map: Record<string, Settlement> = {};
+		for (const s of settlements) {
+			for (const eid of s.expense_ids ?? []) map[eid] = s;
+		}
+		return map;
+	});
+
+	let monthCount = $derived(groupedRows.length);
+	let totalCount = $derived(expenses.length + settlements.length);
 	let pendingCount = $derived(expenses.filter((e) => e.amount_pending).length);
 
 	// Live € preview for the Manuel/Pourcentage panel.
@@ -626,6 +956,163 @@
 		}
 	}
 
+	// ─── Settlement actions ─────────────────────────────────────
+	function resetSettlementForm() {
+		editingSettlementId = null;
+		settleFromFoyerId = '';
+		settleToFoyerId = '';
+		settleAmountEuros = '';
+		settleDate = new Date().toISOString().slice(0, 10);
+		settleNote = '';
+		settleLinkedExpenseIds = [];
+		settlementError = '';
+	}
+
+	function openSettlement() {
+		resetSettlementForm();
+		// Pre-fill from the current balance direction. balance.net > 0 →
+		// 1er owes RDC, so the natural settlement is from=1er, to=rdc.
+		if (balance && balance.net !== 0) {
+			if (balance.net > 0) {
+				settleFromFoyerId = balance.premier.id;
+				settleToFoyerId = balance.rdc.id;
+			} else {
+				settleFromFoyerId = balance.rdc.id;
+				settleToFoyerId = balance.premier.id;
+			}
+			settleAmountEuros = (Math.abs(balance.net) / 100).toFixed(2);
+		}
+		settlementModalOpen = true;
+	}
+
+	function openSettlementEdit(s: Settlement) {
+		resetSettlementForm();
+		editingSettlementId = s.id;
+		settleFromFoyerId = s.from_foyer_id;
+		settleToFoyerId = s.to_foyer_id;
+		settleAmountEuros = (s.amount_cents / 100).toFixed(2);
+		settleDate = s.date.slice(0, 10);
+		settleNote = s.note ?? '';
+		settleLinkedExpenseIds = [...(s.expense_ids ?? [])];
+		settlementModalOpen = true;
+	}
+
+	function closeSettlementModal() {
+		if (savingSettlement) return;
+		settlementModalOpen = false;
+		setTimeout(resetSettlementForm, 220);
+	}
+
+	function toggleSettleLinked(expenseId: string) {
+		if (settleLinkedExpenseIds.includes(expenseId)) {
+			settleLinkedExpenseIds = settleLinkedExpenseIds.filter((id) => id !== expenseId);
+		} else {
+			settleLinkedExpenseIds = [...settleLinkedExpenseIds, expenseId];
+		}
+	}
+
+	// Expenses available to link from the modal: not already settled
+	// (off-the-books), not pending (no amount yet), and not already linked
+	// to a DIFFERENT settlement (the current edit's own links stay
+	// available — see `editingSettlementId` check).
+	let availableLinkExpenses = $derived.by(() => {
+		const out: Expense[] = [];
+		for (const e of expenses) {
+			if (e.settled || e.amount_pending) continue;
+			const linked = linkedSettlementByExpense[e.id];
+			if (linked && linked.id !== editingSettlementId) continue;
+			out.push(e);
+		}
+		return out.sort((a, b) => b.date.localeCompare(a.date));
+	});
+
+	// Live counter: total debt (in the from→to direction) covered by the
+	// currently-checked expenses. Helps the user gauge whether their amount
+	// matches the linked-expense sum.
+	let settleLinkedCoverage = $derived.by(() => {
+		if (!balance) return 0;
+		let total = 0;
+		for (const id of settleLinkedExpenseIds) {
+			const e = expenses.find((x) => x.id === id);
+			if (!e) continue;
+			// "From" foyer's debt contribution from this expense.
+			if (e.payer_foyer_id === settleToFoyerId) {
+				if (settleFromFoyerId === balance.rdc.id) total += e.share_rdc_cents;
+				else if (settleFromFoyerId === balance.premier.id) total += e.share_1er_cents;
+			}
+		}
+		return total;
+	});
+
+	async function onSubmitSettlement(e: SubmitEvent) {
+		e.preventDefault();
+		if (savingSettlement) return;
+		settlementError = '';
+
+		if (settleSameFoyer) {
+			settlementError = 'Les foyers « De » et « Vers » doivent être différents.';
+			return;
+		}
+		if (!settleFromFoyerId || !settleToFoyerId) {
+			settlementError = 'Sélectionne les deux foyers.';
+			return;
+		}
+		const amountCents = eurosToCents(settleAmountEuros);
+		if (!Number.isFinite(amountCents) || amountCents <= 0) {
+			settlementError = 'Montant invalide.';
+			return;
+		}
+		if (!settleDate) {
+			settlementError = 'Date requise.';
+			return;
+		}
+		const body: CreateSettlementInput = {
+			from_foyer_id: settleFromFoyerId,
+			to_foyer_id: settleToFoyerId,
+			amount_cents: amountCents,
+			date: settleDate,
+			note: settleNote.trim() || undefined,
+			expense_ids: settleLinkedExpenseIds.length ? settleLinkedExpenseIds : undefined
+		};
+		savingSettlement = true;
+		try {
+			if (editingSettlementId) {
+				await updateSettlement(editingSettlementId, body);
+			} else {
+				await createSettlement(body);
+			}
+			settlementModalOpen = false;
+			setTimeout(resetSettlementForm, 220);
+		} catch (err) {
+			settlementError = err instanceof ApiError ? `${err.code}: ${err.message}` : String(err);
+		} finally {
+			savingSettlement = false;
+		}
+	}
+
+	async function onDeleteSettlement(s: Settlement) {
+		if (deletingSettlementId) return;
+		const ok = window.confirm(
+			`Supprimer le règlement de ${(s.amount_cents / 100).toFixed(2)} € du ${formatDate(s.date)} ?\nCette action est irréversible.`
+		);
+		if (!ok) return;
+		deletingSettlementId = s.id;
+		try {
+			await deleteSettlement(s.id);
+		} catch (err) {
+			liveError = err instanceof ApiError ? `${err.code}: ${err.message}` : String(err);
+		} finally {
+			deletingSettlementId = null;
+		}
+	}
+
+	function foyerNameFor(id: string): string {
+		return foyers.find((f) => f.id === id)?.name ?? id;
+	}
+	function foyerFloorFor(id: string): 'rdc' | '1er' | undefined {
+		return foyers.find((f) => f.id === id)?.floor;
+	}
+
 	async function onSubmit(e: SubmitEvent) {
 		e.preventDefault();
 		// Idempotency guard: a fast double-tap on iOS Safari (or Enter-Enter
@@ -724,35 +1211,9 @@
 	}
 </script>
 
-<svelte:head>
-	<link rel="preconnect" href="https://fonts.googleapis.com" />
-	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
-	<link
-		href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,300;1,9..144,400&family=Hanken+Grotesk:wght@400;500;600;700&display=swap"
-		rel="stylesheet"
-	/>
-</svelte:head>
-
 <svelte:window onkeydown={onKeydown} />
 
 <div class="page">
-	<!-- ─── Top bar ─────────────────────────────────── -->
-	<header class="top">
-		<a class="brand" href="/expenses">
-			<span class="brand-mark">C/M</span>
-			<span class="brand-name">Copro <em>Manager</em></span>
-		</a>
-		<div class="user-block">
-			{#if $authState.status === 'signed-in'}
-				<span class="user-email">{$authState.user.email}</span>
-				<div class="user-links">
-					<a class="link" href="/templates">Modèles</a>
-					<button class="link" onclick={() => logout()}>Déconnexion</button>
-				</div>
-			{/if}
-		</div>
-	</header>
-
 	{#if $authState.status !== 'signed-in'}
 		<main class="main">
 			<p class="muted center">Chargement…</p>
@@ -792,6 +1253,13 @@
 					</p>
 				{/if}
 
+				{#if balance && balance.net !== 0}
+					<button type="button" class="hero-settle-btn" onclick={openSettlement}>
+						<span class="hero-settle-glyph" aria-hidden="true">↺</span>
+						Régler
+					</button>
+				{/if}
+
 				{#if totalCount > 0}
 					<dl class="hero-stats">
 						<div>
@@ -820,6 +1288,163 @@
 					</span>
 				</header>
 
+				<!-- ─── Filter bar ─── -->
+				<div class="filter-bar">
+					<input
+						type="search"
+						class="filter-search"
+						placeholder="Rechercher (montant, note, intitulé)…"
+						bind:value={searchQuery}
+					/>
+					<button
+						type="button"
+						class="filter-toggle"
+						class:on={filtersOpen}
+						onclick={() => (filtersOpen = !filtersOpen)}
+						aria-expanded={filtersOpen}
+					>
+						Filtres
+						{#if activeFilterCount > 0}
+							<span class="filter-count">{activeFilterCount}</span>
+						{/if}
+					</button>
+					{#if activeFilterCount > 0}
+						<button type="button" class="filter-reset" onclick={resetFilters}>
+							Réinitialiser
+						</button>
+					{/if}
+				</div>
+
+				{#if filtersOpen}
+					<div class="filter-panel">
+						<div class="filter-row">
+							<span class="filter-label">Type</span>
+							<div class="seg" role="tablist">
+								<button
+									type="button"
+									class:active={filters.type === 'all'}
+									onclick={() => (filters = { ...filters, type: 'all' })}>Tout</button
+								>
+								<button
+									type="button"
+									class:active={filters.type === 'expenses'}
+									onclick={() => (filters = { ...filters, type: 'expenses' })}>Dépenses</button
+								>
+								<button
+									type="button"
+									class:active={filters.type === 'settlements'}
+									onclick={() => (filters = { ...filters, type: 'settlements' })}
+									>Règlements</button
+								>
+							</div>
+						</div>
+
+						<div class="filter-row">
+							<span class="filter-label">État</span>
+							<div class="seg" role="tablist">
+								<button
+									type="button"
+									class:active={filters.state === 'all'}
+									onclick={() => (filters = { ...filters, state: 'all' })}>Tout</button
+								>
+								<button
+									type="button"
+									class:active={filters.state === 'pending'}
+									onclick={() => (filters = { ...filters, state: 'pending' })}
+									>À&nbsp;compléter</button
+								>
+								<button
+									type="button"
+									class:active={filters.state === 'settled'}
+									onclick={() => (filters = { ...filters, state: 'settled' })}>Réglée</button
+								>
+								<button
+									type="button"
+									class:active={filters.state === 'paired'}
+									onclick={() => (filters = { ...filters, state: 'paired' })}>Liée à un règlement</button
+								>
+							</div>
+						</div>
+
+						<div class="filter-row filter-row-dates">
+							<span class="filter-label">Période</span>
+							<input
+								type="date"
+								class="filter-date"
+								bind:value={filters.from}
+								aria-label="Du"
+							/>
+							<span class="filter-date-sep">→</span>
+							<input
+								type="date"
+								class="filter-date"
+								bind:value={filters.to}
+								aria-label="Au"
+							/>
+						</div>
+
+						<div class="filter-row filter-row-chips">
+							<span class="filter-label">Catégories</span>
+							<div class="filter-chips">
+								{#each categories as c (c.id)}
+									{@const on = filters.categories.includes(c.id)}
+									<button
+										type="button"
+										class="filter-chip"
+										class:on
+										onclick={() =>
+											(filters = {
+												...filters,
+												categories: toggleInArray(filters.categories, c.id)
+											})}
+									>
+										{c.name}
+									</button>
+								{/each}
+							</div>
+						</div>
+
+						<div class="filter-row filter-row-chips">
+							<span class="filter-label">Payeur</span>
+							<div class="filter-chips">
+								{#each foyers as f (f.id)}
+									{@const on = filters.payers.includes(f.id)}
+									<button
+										type="button"
+										class="filter-chip"
+										class:on
+										onclick={() =>
+											(filters = { ...filters, payers: toggleInArray(filters.payers, f.id) })}
+									>
+										{f.name}
+									</button>
+								{/each}
+							</div>
+						</div>
+
+						<div class="filter-row filter-row-chips">
+							<span class="filter-label">Répartition</span>
+							<div class="filter-chips">
+								{#each ['equal', 'tantiemes', 'custom'] as m}
+									{@const on = filters.modes.includes(m as DistributionMode)}
+									<button
+										type="button"
+										class="filter-chip"
+										class:on
+										onclick={() =>
+											(filters = {
+												...filters,
+												modes: toggleInArray(filters.modes, m as DistributionMode)
+											})}
+									>
+										{m === 'equal' ? '50/50' : m === 'tantiemes' ? 'Tantièmes' : 'Manuel'}
+									</button>
+								{/each}
+							</div>
+						</div>
+					</div>
+				{/if}
+
 				{#if pendingCount > 0}
 					<div class="pending-banner" role="status">
 						<span class="pending-banner-glyph" aria-hidden="true">⌇</span>
@@ -839,7 +1464,7 @@
 						<span class="placeholder-bar short"></span>
 						<span class="placeholder-bar"></span>
 					</div>
-				{:else if expenses.length === 0}
+				{:else if expenses.length === 0 && settlements.length === 0}
 					<div class="empty">
 						<div class="empty-mark" aria-hidden="true">❦</div>
 						<h3>Le carnet est vierge.</h3>
@@ -851,8 +1476,19 @@
 							Inscrire la première dépense
 						</button>
 					</div>
+				{:else if filteredRows.length === 0}
+					<div class="empty">
+						<div class="empty-mark" aria-hidden="true">❦</div>
+						<h3>Aucune ligne ne correspond aux filtres actifs.</h3>
+						<p>
+							Ajuste la recherche ou réinitialise les filtres pour voir tout le carnet.
+						</p>
+						<button type="button" class="empty-cta" onclick={resetFilters}>
+							Réinitialiser les filtres
+						</button>
+					</div>
 				{:else}
-					{#each groupedExpenses as [yyyymm, group] (yyyymm)}
+					{#each groupedRows as [yyyymm, group] (yyyymm)}
 						<div class="month">
 							<header class="month-head">
 								<span class="month-label">{formatMonth(yyyymm)}</span>
@@ -862,7 +1498,10 @@
 								</span>
 							</header>
 							<ul class="rows">
-								{#each group as exp, idx (exp.id)}
+								{#each group as row, idx (row.id)}
+								{#if row.kind === 'expense'}
+								{@const exp = row.expense}
+								{@const linkedSettlement = linkedSettlementByExpense[exp.id]}
 									{@const cat = categoryStyle(exp.category_id)}
 									{@const dp = dayParts(exp.date)}
 									{@const payer = foyers.find((f) => f.id === exp.payer_foyer_id)}
@@ -897,6 +1536,14 @@
 												{#if exp.template_id}
 													<span class="row-template" title="Créée depuis un modèle">modèle</span>
 												{/if}
+												{#if linkedSettlement}
+													<span
+														class="row-paired"
+														title="Réglée par le règlement du {formatDate(linkedSettlement.date)}"
+													>
+														réglé · {linkedSettlement.date.slice(5, 10)}
+													</span>
+												{/if}
 												{#if exp.note}
 													<span class="row-note">{exp.note}</span>
 												{/if}
@@ -916,13 +1563,13 @@
 													{#if exp.payment_date}
 														<span>
 															<span class="meta-label">Payée&nbsp;le</span>
-															{exp.payment_date.slice(0, 10)}
+															{formatDate(exp.payment_date)}
 														</span>
 													{/if}
 													{#if exp.settled && exp.settled_at}
 														<span>
 															<span class="meta-label">Réglée&nbsp;le</span>
-															{exp.settled_at.slice(0, 10)}
+															{formatDate(exp.settled_at)}
 														</span>
 													{/if}
 												</p>
@@ -967,26 +1614,22 @@
 												</button>
 											{/if}
 											<div class="row-actions">
-												<button
-													type="button"
-													class="row-action"
+												<IconButton
+													icon="edit"
+													size="sm"
 													aria-label="Modifier la dépense"
-													title="Modifier"
 													onclick={() => openEdit(exp)}
 													disabled={creating || deletingId !== null}
-												>
-													Modifier
-												</button>
-												<button
-													type="button"
-													class="row-action row-action-danger"
+												/>
+												<IconButton
+													icon="delete"
+													variant="danger"
+													size="sm"
 													aria-label="Supprimer la dépense"
-													title="Supprimer"
+													aria-busy={deletingId === exp.id}
 													onclick={() => onDelete(exp)}
 													disabled={creating || deletingId !== null}
-												>
-													{deletingId === exp.id ? '…' : 'Supprimer'}
-												</button>
+												/>
 											</div>
 										</div>
 										{#if expandedRows[exp.id] && exp.attachments && exp.attachments.length > 0}
@@ -1021,27 +1664,83 @@
 															<span class="att-meta-size">{formatFileSize(att.size_bytes)}</span>
 														</div>
 														<div class="att-actions">
-															<button
-																type="button"
-																class="row-action"
+															<IconButton
+																icon="download"
+																size="sm"
+																aria-label="Voir {att.original_filename}"
 																onclick={() => onViewAttachment(exp, att)}
-															>
-																Voir
-															</button>
-															<button
-																type="button"
-																class="row-action row-action-danger"
+															/>
+															<IconButton
+																icon="delete"
+																variant="danger"
+																size="sm"
+																aria-label="Supprimer {att.original_filename}"
+																aria-busy={deletingAttachmentId === att.id}
 																onclick={() => onDeleteAttachment(exp, att)}
 																disabled={deletingAttachmentId !== null}
-															>
-																{deletingAttachmentId === att.id ? '…' : 'Supprimer'}
-															</button>
+															/>
 														</div>
 													</div>
 												{/each}
 											</div>
 										{/if}
 									</li>
+								{:else}
+									{@const s = row.settlement}
+									<li class="row settlement-row" style:--idx={idx}>
+										<div class="row-day">
+											<span class="row-day-num">{dayParts(s.date).num}</span>
+											<span class="row-day-mon">{dayParts(s.date).mon}</span>
+										</div>
+										<div class="row-mono settlement-glyph" aria-hidden="true">
+											<span>↺</span>
+										</div>
+										<div class="row-body">
+											<p class="row-title">
+												<span class="cat-name">Règlement</span>
+												<span class="settlement-direction">
+													<span class="foyer-tag foyer-{foyerFloorFor(s.from_foyer_id) ?? 'rdc'}">
+														{foyerNameFor(s.from_foyer_id)}
+													</span>
+													<span class="settlement-arrow" aria-hidden="true">→</span>
+													<span class="foyer-tag foyer-{foyerFloorFor(s.to_foyer_id) ?? '1er'}">
+														{foyerNameFor(s.to_foyer_id)}
+													</span>
+												</span>
+												{#if s.note}
+													<span class="row-note">{s.note}</span>
+												{/if}
+											</p>
+											{#if (s.expense_ids?.length ?? 0) > 0}
+												<p class="row-meta">
+													<span class="meta-label">couvre</span>
+													<span>{s.expense_ids?.length} dépense{(s.expense_ids?.length ?? 0) > 1 ? 's' : ''}</span>
+												</p>
+											{/if}
+										</div>
+										<div class="row-right">
+											<div class="row-amount settlement-amount">{formatEUR(s.amount_cents)}</div>
+											<div class="row-actions">
+												<IconButton
+													icon="edit"
+													size="sm"
+													aria-label="Modifier le règlement"
+													onclick={() => openSettlementEdit(s)}
+													disabled={savingSettlement || deletingSettlementId !== null}
+												/>
+												<IconButton
+													icon="delete"
+													variant="danger"
+													size="sm"
+													aria-label="Supprimer le règlement"
+													aria-busy={deletingSettlementId === s.id}
+													onclick={() => onDeleteSettlement(s)}
+													disabled={savingSettlement || deletingSettlementId !== null}
+												/>
+											</div>
+										</div>
+									</li>
+								{/if}
 								{/each}
 							</ul>
 						</div>
@@ -1051,10 +1750,7 @@
 		</main>
 
 		<!-- ─── FAB ─────────────────────────────────── -->
-		<button class="fab" type="button" onclick={openChooser} aria-label="Nouvelle dépense">
-			<span class="fab-plus" aria-hidden="true">+</span>
-			<span class="fab-text">Nouvelle dépense</span>
-		</button>
+		<Fab onclick={openChooser} aria-label="Nouvelle dépense">Nouvelle dépense</Fab>
 
 		<!-- ─── Chooser sheet (Vide / Depuis un modèle) ─── -->
 		{#if chooserOpen}
@@ -1067,9 +1763,12 @@
 			<div class="chooser" role="dialog" aria-modal="true" aria-labelledby="chooser-title">
 				<header class="chooser-head">
 					<h2 id="chooser-title">Nouvelle dépense</h2>
-					<button class="modal-close" type="button" onclick={closeChooser} aria-label="Fermer"
-						>×</button
-					>
+					<IconButton
+						icon="close"
+						variant="text"
+						aria-label="Fermer"
+						onclick={closeChooser}
+					/>
 				</header>
 				<div class="chooser-body">
 					<button class="chooser-opt" type="button" onclick={chooseBlank}>
@@ -1108,9 +1807,12 @@
 						<p class="modal-eyebrow">Modèles</p>
 						<h2 id="picker-title">Choisir un modèle</h2>
 					</div>
-					<button class="modal-close" type="button" onclick={closePicker} aria-label="Fermer"
-						>×</button
-					>
+					<IconButton
+						icon="close"
+						variant="text"
+						aria-label="Fermer"
+						onclick={closePicker}
+					/>
 				</header>
 				<ul class="picker-list">
 					{#each templates as t (t.id)}
@@ -1133,8 +1835,165 @@
 					{/each}
 				</ul>
 				<footer class="picker-foot">
-					<a class="link" href="/templates">Gérer les modèles →</a>
+					<Button variant="text" href="/templates">Gérer les modèles →</Button>
 				</footer>
+			</div>
+		{/if}
+
+		<!-- ─── Settlement modal ─────────────────────── -->
+		{#if settlementModalOpen}
+			<div
+				class="modal-backdrop"
+				role="presentation"
+				onclick={closeSettlementModal}
+				onkeydown={(e) => e.key === 'Escape' && closeSettlementModal()}
+			></div>
+			<div
+				class="modal"
+				role="dialog"
+				aria-modal="true"
+				aria-labelledby="settle-modal-title"
+			>
+				<header class="modal-head">
+					<div>
+						<p class="modal-eyebrow">{isEditingSettlement ? 'Édition' : 'Règlement'}</p>
+						<h2 id="settle-modal-title">
+							{isEditingSettlement ? 'Modifier le règlement' : 'Enregistrer un règlement'}
+						</h2>
+					</div>
+					<IconButton
+						icon="close"
+						variant="text"
+						aria-label="Fermer"
+						onclick={closeSettlementModal}
+					/>
+				</header>
+
+				<form class="modal-body" onsubmit={onSubmitSettlement}>
+					<div class="grid-2">
+						<label class="field">
+							<span class="lbl">De</span>
+							<select bind:value={settleFromFoyerId} required>
+								<option value="" disabled>—</option>
+								{#each foyers as f (f.id)}
+									<option value={f.id}>{f.name}</option>
+								{/each}
+							</select>
+						</label>
+						<label class="field">
+							<span class="lbl">Vers</span>
+							<select bind:value={settleToFoyerId} required>
+								<option value="" disabled>—</option>
+								{#each foyers as f (f.id)}
+									<option value={f.id}>{f.name}</option>
+								{/each}
+							</select>
+						</label>
+					</div>
+					{#if settleSameFoyer}
+						<p class="form-error" role="alert">
+							Les foyers « De » et « Vers » doivent être différents.
+						</p>
+					{/if}
+
+					<div class="grid-2">
+						<label class="field">
+							<span class="lbl">Montant</span>
+							<div class="input-suffix">
+								<input
+									type="text"
+									inputmode="decimal"
+									bind:value={settleAmountEuros}
+									placeholder="0,00"
+									required
+								/>
+								<span class="suffix">€</span>
+							</div>
+						</label>
+						<label class="field">
+							<span class="lbl">Date</span>
+							<input type="date" bind:value={settleDate} required />
+						</label>
+					</div>
+
+					<label class="field">
+						<span class="lbl">Note (optionnel)</span>
+						<input
+							type="text"
+							bind:value={settleNote}
+							placeholder="Réf SEPA, virement…"
+						/>
+					</label>
+
+					<fieldset class="link-group">
+						<legend class="lbl">
+							Dépenses couvertes
+							<span class="lbl-aside">— optionnel</span>
+						</legend>
+						<p class="link-counter">
+							Sélectionnées :
+							<strong>{settleLinkedExpenseIds.length}</strong>
+							· couvre {formatEUR(settleLinkedCoverage)} de dette
+						</p>
+						{#if availableLinkExpenses.length === 0}
+							<p class="field-hint">Aucune dépense disponible à lier.</p>
+						{:else}
+							<ul class="link-list">
+								{#each availableLinkExpenses as exp (exp.id)}
+									{@const checked = settleLinkedExpenseIds.includes(exp.id)}
+									{@const payer = foyers.find((f) => f.id === exp.payer_foyer_id)}
+									<li class="link-item" class:link-item-on={checked}>
+										<label>
+											<input
+												type="checkbox"
+												{checked}
+												onchange={() => toggleSettleLinked(exp.id)}
+											/>
+											<span class="link-item-body">
+												<span class="link-item-name">
+													{exp.name || categoryName(exp.category_id)}
+												</span>
+												<span class="link-item-meta">
+													<span>{formatDate(exp.date)}</span>
+													{#if payer}
+														<span class="foyer-tag foyer-{payer.floor}">{payer.name}</span>
+													{/if}
+													<span class="link-item-amt">{formatEUR(exp.amount_cents)}</span>
+												</span>
+											</span>
+										</label>
+									</li>
+								{/each}
+							</ul>
+						{/if}
+					</fieldset>
+
+					{#if settlementError}
+						<p class="form-error" role="alert">{settlementError}</p>
+					{/if}
+
+					<div class="modal-actions">
+						<Button
+							variant="ghost"
+							onclick={closeSettlementModal}
+							disabled={savingSettlement}
+						>
+							Annuler
+						</Button>
+						<Button
+							type="submit"
+							variant="primary"
+							mark
+							disabled={savingSettlement || settleSameFoyer}
+						>
+							{#if savingSettlement}
+								{isEditingSettlement ? 'Mise à jour…' : 'Enregistrement…'}
+							{:else}
+								{isEditingSettlement ? 'Mettre à jour' : 'Enregistrer le règlement'}
+							{/if}
+						</Button>
+					</div>
+				</form>
 			</div>
 		{/if}
 
@@ -1154,12 +2013,12 @@
 							{isEditing ? 'Modifier la dépense' : 'Inscrire une dépense'}
 						</h2>
 					</div>
-					<button
-						class="modal-close"
-						type="button"
-						onclick={closeCreate}
+					<IconButton
+						icon="close"
+						variant="text"
 						aria-label="Fermer"
-					>×</button>
+						onclick={closeCreate}
+					/>
 				</header>
 
 				<form class="modal-body" onsubmit={onSubmit}>
@@ -1230,6 +2089,34 @@
 								<option value={c.id}>{c.name}</option>
 							{/each}
 						</select>
+						{#if inlineCatCreating}
+							<div class="inline-cat">
+								<input
+									type="text"
+									bind:value={inlineCatName}
+									placeholder="Nom de la catégorie"
+									onkeydown={(e) => {
+										if (e.key === 'Enter') {
+											e.preventDefault();
+											confirmInlineCat();
+										}
+									}}
+								/>
+								<button type="button" onclick={confirmInlineCat} disabled={inlineCatSaving}>
+									{inlineCatSaving ? '…' : 'Créer'}
+								</button>
+								<button type="button" class="inline-cat-cancel" onclick={closeInlineCat} disabled={inlineCatSaving}>
+									Annuler
+								</button>
+							</div>
+							{#if inlineCatError}
+								<p class="inline-cat-err" role="alert">{inlineCatError}</p>
+							{/if}
+						{:else}
+							<button type="button" class="inline-cat-trigger" onclick={openInlineCat}>
+								+ Nouvelle catégorie
+							</button>
+						{/if}
 					</label>
 
 					<fieldset class="mode-group">
@@ -1422,21 +2309,21 @@
 												{att.original_filename || att.id}
 											</span>
 											<span class="attach-size">{formatFileSize(att.size_bytes)}</span>
-											<button
-												type="button"
-												class="attach-mini"
+											<IconButton
+												icon="download"
+												size="sm"
+												aria-label="Voir {att.original_filename}"
 												onclick={() => editingExp && onViewAttachment(editingExp, att)}
-											>
-												Voir
-											</button>
-											<button
-												type="button"
-												class="attach-mini attach-mini-danger"
+											/>
+											<IconButton
+												icon="delete"
+												variant="danger"
+												size="sm"
+												aria-label="Retirer {att.original_filename}"
+												aria-busy={deletingAttachmentId === att.id}
 												onclick={() => editingExp && onDeleteAttachment(editingExp, att)}
 												disabled={deletingAttachmentId !== null}
-											>
-												{deletingAttachmentId === att.id ? '…' : 'Retirer'}
-											</button>
+											/>
 										</li>
 									{/each}
 								</ul>
@@ -1470,14 +2357,14 @@
 										{:else if uploadingFileIdx !== null && i < uploadingFileIdx}
 											<span class="attach-status attach-status-ok">Envoyé</span>
 										{:else}
-											<button
-												type="button"
-												class="attach-mini"
+											<IconButton
+												icon="close"
+												variant="danger"
+												size="sm"
+												aria-label="Retirer le fichier"
 												onclick={() => removePendingFile(i)}
 												disabled={creating}
-											>
-												Retirer
-											</button>
+											/>
 										{/if}
 									</li>
 								{/each}
@@ -1493,17 +2380,11 @@
 					{/if}
 
 					<div class="modal-actions">
-						<button
-							type="button"
-							class="btn-ghost"
-							onclick={closeCreate}
-							disabled={creating}
-						>
-							Annuler
-						</button>
-						<button
+						<Button variant="ghost" onclick={closeCreate} disabled={creating}>Annuler</Button>
+						<Button
 							type="submit"
-							class="btn-primary"
+							variant="primary"
+							mark
 							disabled={creating || !payerFoyerId || !categoryId}
 						>
 							{#if creating}
@@ -1511,7 +2392,7 @@
 							{:else}
 								{isEditing ? 'Mettre à jour' : 'Enregistrer'}
 							{/if}
-						</button>
+						</Button>
 					</div>
 				</form>
 			</div>
@@ -1562,82 +2443,6 @@
 			radial-gradient(900px 460px at 110% 110%, rgba(90, 116, 97, 0.06), transparent 70%),
 			var(--bg);
 		padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 8.5rem);
-	}
-
-	/* =========================================================
-	   TOP BAR
-	   ========================================================= */
-	.top {
-		max-width: 720px;
-		margin: 0 auto;
-		padding: 1.4rem 1.25rem 0.5rem;
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 1rem;
-	}
-
-	.brand {
-		display: flex;
-		align-items: center;
-		gap: 0.6rem;
-		text-decoration: none;
-		color: var(--ink);
-	}
-	.brand-mark {
-		font-family: var(--display);
-		font-style: italic;
-		font-weight: 400;
-		font-size: 1rem;
-		letter-spacing: 0.02em;
-		line-height: 1;
-		padding: 0.42rem 0.55rem;
-		border: 1px solid var(--ink);
-		border-radius: 999px;
-		font-feature-settings: 'liga' 1, 'calt' 1;
-	}
-	.brand-name {
-		font-family: var(--display);
-		font-weight: 400;
-		font-size: 1.05rem;
-		letter-spacing: 0.005em;
-		color: var(--ink);
-	}
-	.brand-name em {
-		font-style: italic;
-		font-weight: 400;
-		color: var(--ink-2);
-	}
-
-	.user-block {
-		display: flex;
-		flex-direction: column;
-		align-items: flex-end;
-		gap: 0.15rem;
-		min-width: 0;
-	}
-	.user-email {
-		font-size: 0.78rem;
-		color: var(--ink-3);
-		max-width: 14rem;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-	.link {
-		background: transparent;
-		border: 0;
-		color: var(--accent);
-		font-family: var(--ui);
-		font-size: 0.7rem;
-		text-transform: uppercase;
-		letter-spacing: 0.22em;
-		font-weight: 600;
-		cursor: pointer;
-		padding: 0;
-	}
-	.link:hover {
-		color: var(--ink);
 	}
 
 	/* =========================================================
@@ -2000,6 +2805,162 @@
 		border-radius: 0.3rem;
 		border: 1px solid var(--hairline-2);
 	}
+	.row-paired {
+		font-size: 0.62rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.16em;
+		color: var(--rdc);
+		background: var(--rdc-soft);
+		padding: 0.18rem 0.5rem;
+		border-radius: 0.3rem;
+		border: 1px solid rgba(90, 116, 97, 0.25);
+	}
+	/* ─── Settlement row variant ─── */
+	.settlement-row {
+		background: var(--bg-warm);
+	}
+	.settlement-row .row-mono.settlement-glyph {
+		background: var(--accent-soft);
+		color: var(--accent-deep);
+		font-family: var(--display);
+		font-size: 1.4rem;
+		font-style: italic;
+		border-radius: 999px;
+	}
+	.settlement-direction {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.35rem;
+		font-size: 0.85rem;
+		color: var(--ink-2);
+		margin-left: 0.4rem;
+	}
+	.settlement-arrow {
+		color: var(--accent);
+		font-family: var(--display);
+		font-size: 1rem;
+	}
+	.settlement-amount {
+		color: var(--accent-deep);
+		font-feature-settings: 'tnum';
+	}
+	/* ─── Hero "Régler" button ─── */
+	.hero-settle-btn {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.45rem;
+		margin-top: 1rem;
+		padding: 0.55rem 1.1rem;
+		font-family: var(--ui);
+		font-size: 0.85rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.14em;
+		color: var(--bg);
+		background: var(--accent);
+		border: 0;
+		border-radius: 999px;
+		cursor: pointer;
+		transition:
+			transform 160ms,
+			background 160ms;
+	}
+	.hero-settle-btn:hover {
+		transform: translateY(-1px);
+		background: var(--accent-deep);
+	}
+	.hero-settle-glyph {
+		font-family: var(--display);
+		font-size: 1.1rem;
+		font-style: italic;
+		line-height: 1;
+	}
+	/* ─── Linked-expenses picker (settlement modal) ─── */
+	.link-group {
+		border: 1px dashed var(--hairline-2);
+		border-radius: 0.7rem;
+		padding: 0.85rem 1rem;
+		margin: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.55rem;
+		background: var(--bg);
+	}
+	.link-group legend {
+		padding: 0 0.4rem;
+	}
+	.link-counter {
+		font-size: 0.78rem;
+		color: var(--ink-3);
+		margin: 0;
+	}
+	.link-counter strong {
+		color: var(--ink);
+		font-feature-settings: 'tnum';
+	}
+	.link-list {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.3rem;
+		max-height: 240px;
+		overflow-y: auto;
+	}
+	.link-item {
+		background: var(--surface);
+		border: 1px solid var(--hairline);
+		border-radius: 0.5rem;
+		padding: 0.45rem 0.65rem;
+		transition:
+			background 160ms,
+			border-color 160ms;
+	}
+	.link-item-on {
+		background: var(--accent-soft);
+		border-color: var(--accent);
+	}
+	.link-item label {
+		display: flex;
+		align-items: center;
+		gap: 0.6rem;
+		cursor: pointer;
+	}
+	.link-item input[type='checkbox'] {
+		accent-color: var(--accent);
+		width: 1rem;
+		height: 1rem;
+		flex-shrink: 0;
+	}
+	.link-item-body {
+		display: flex;
+		flex-direction: column;
+		gap: 0.15rem;
+		min-width: 0;
+		flex: 1;
+	}
+	.link-item-name {
+		font-size: 0.88rem;
+		color: var(--ink);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.link-item-meta {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		flex-wrap: wrap;
+		font-size: 0.74rem;
+		color: var(--ink-3);
+	}
+	.link-item-amt {
+		margin-left: auto;
+		font-feature-settings: 'tnum';
+		color: var(--ink-2);
+	}
 	.row-amount-cta {
 		font-family: var(--display);
 		font-size: 0.95rem;
@@ -2032,6 +2993,163 @@
 		border-radius: 0.65rem;
 		font-size: 0.85rem;
 		color: var(--accent-deep);
+	}
+
+	/* ─── Filter bar + panel ─── */
+	.filter-bar {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+		align-items: center;
+		margin: 0 0 0.6rem;
+	}
+	.filter-search {
+		flex: 1;
+		min-width: 200px;
+		padding: 0.55rem 0.85rem;
+		border: 1px solid var(--hairline-2);
+		border-radius: 999px;
+		font-family: var(--ui);
+		font-size: 0.9rem;
+		background: var(--surface);
+		color: var(--ink);
+	}
+	.filter-search:focus {
+		outline: none;
+		border-color: var(--accent);
+		box-shadow: 0 0 0 3px var(--accent-soft);
+	}
+	.filter-toggle {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		padding: 0.45rem 0.95rem;
+		font-family: var(--ui);
+		font-size: 0.8rem;
+		font-weight: 600;
+		color: var(--ink-2);
+		background: var(--surface);
+		border: 1px solid var(--hairline-2);
+		border-radius: 999px;
+		cursor: pointer;
+	}
+	.filter-toggle.on,
+	.filter-toggle:hover {
+		background: var(--accent-soft);
+		color: var(--accent-deep);
+		border-color: var(--accent);
+	}
+	.filter-count {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 1.2rem;
+		height: 1.2rem;
+		padding: 0 0.35rem;
+		background: var(--accent);
+		color: var(--bg);
+		border-radius: 999px;
+		font-size: 0.7rem;
+		font-feature-settings: 'tnum';
+	}
+	.filter-reset {
+		font-family: var(--ui);
+		font-size: 0.78rem;
+		color: var(--accent);
+		background: transparent;
+		border: 0;
+		padding: 0.4rem 0.6rem;
+		cursor: pointer;
+		text-decoration: underline;
+		text-underline-offset: 3px;
+	}
+	.filter-panel {
+		display: flex;
+		flex-direction: column;
+		gap: 0.65rem;
+		padding: 0.85rem 1rem 1rem;
+		background: var(--bg-warm);
+		border: 1px solid var(--hairline);
+		border-radius: 0.7rem;
+		margin: 0 0 1rem;
+	}
+	.filter-row {
+		display: flex;
+		align-items: center;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+	}
+	.filter-row-chips {
+		align-items: flex-start;
+	}
+	.filter-row-dates {
+		gap: 0.4rem;
+	}
+	.filter-label {
+		font-size: 0.7rem;
+		text-transform: uppercase;
+		letter-spacing: 0.16em;
+		color: var(--ink-3);
+		font-weight: 600;
+		min-width: 5.5rem;
+	}
+	.filter-date {
+		font-family: var(--ui);
+		font-size: 0.85rem;
+		padding: 0.35rem 0.55rem;
+		border: 1px solid var(--hairline-2);
+		border-radius: 0.45rem;
+		background: var(--surface);
+		color: var(--ink);
+	}
+	.filter-date-sep {
+		color: var(--ink-3);
+		font-family: var(--display);
+	}
+	.filter-chips {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.35rem;
+		flex: 1;
+	}
+	.filter-chip {
+		font-family: var(--ui);
+		font-size: 0.75rem;
+		font-weight: 600;
+		color: var(--ink-2);
+		background: var(--surface);
+		border: 1px solid var(--hairline-2);
+		border-radius: 999px;
+		padding: 0.22rem 0.7rem;
+		cursor: pointer;
+	}
+	.filter-chip:hover {
+		border-color: var(--accent);
+	}
+	.filter-chip.on {
+		background: var(--accent);
+		color: var(--bg);
+		border-color: var(--accent);
+	}
+	.seg {
+		display: inline-flex;
+		border: 1px solid var(--hairline-2);
+		border-radius: 999px;
+		overflow: hidden;
+		flex-wrap: wrap;
+	}
+	.seg button {
+		background: transparent;
+		border: 0;
+		padding: 0.32rem 0.85rem;
+		font-family: var(--ui);
+		font-size: 0.78rem;
+		color: var(--ink-3);
+		cursor: pointer;
+	}
+	.seg button.active {
+		background: var(--ink);
+		color: var(--bg);
 	}
 	.pending-banner-glyph {
 		font-family: var(--display);
@@ -2144,29 +3262,6 @@
 	}
 	.attach-status-ok {
 		color: var(--ok);
-	}
-	.attach-mini {
-		font-size: 0.7rem;
-		font-weight: 600;
-		color: var(--ink-2);
-		background: transparent;
-		border: 1px solid var(--hairline-2);
-		border-radius: 999px;
-		padding: 0.18rem 0.55rem;
-		cursor: pointer;
-	}
-	.attach-mini:hover:not(:disabled) {
-		background: var(--bg);
-		color: var(--ink);
-	}
-	.attach-mini:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-	.attach-mini-danger:hover:not(:disabled) {
-		color: var(--danger);
-		border-color: rgba(183, 50, 35, 0.3);
-		background: rgba(183, 50, 35, 0.06);
 	}
 	.attach-picker {
 		display: flex;
@@ -2307,33 +3402,6 @@
 			opacity: 1;
 		}
 	}
-	.row-action {
-		font-size: 0.66rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.18em;
-		color: var(--ink-2);
-		background: transparent;
-		border: 1px solid var(--hairline-2);
-		border-radius: 999px;
-		padding: 0.22rem 0.6rem;
-		cursor: pointer;
-		transition: background 160ms, color 160ms, border-color 160ms;
-	}
-	.row-action:hover:not(:disabled) {
-		background: var(--bg);
-		color: var(--ink);
-	}
-	.row-action:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-	.row-action-danger:hover:not(:disabled) {
-		background: rgba(183, 50, 35, 0.08);
-		color: var(--danger);
-		border-color: rgba(183, 50, 35, 0.3);
-	}
-
 	/* ─── Attachments: chip + drawer + thumbnails ─── */
 	.row-attach-chip {
 		display: inline-flex;
@@ -2553,61 +3621,6 @@
 		padding: 0.05rem 0.3rem;
 		border-radius: 0.25rem;
 		color: var(--ink);
-	}
-
-	/* =========================================================
-	   FAB
-	   ========================================================= */
-	.fab {
-		position: fixed;
-		right: max(1.25rem, calc((100vw - 720px) / 2 + 1.25rem));
-		bottom: max(1.5rem, calc(env(safe-area-inset-bottom, 0px) + 1rem));
-		display: inline-flex;
-		align-items: center;
-		gap: 0.6rem;
-		padding: 0.95rem 1.4rem 0.95rem 1.05rem;
-		background: var(--ink);
-		color: var(--surface);
-		border: 0;
-		border-radius: 999px;
-		font-family: var(--ui);
-		font-weight: 600;
-		font-size: 0.88rem;
-		letter-spacing: 0.005em;
-		cursor: pointer;
-		box-shadow: var(--shadow-lg);
-		transition:
-			transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1),
-			background 220ms;
-		z-index: 30;
-	}
-	.fab:hover {
-		transform: translateY(-2px);
-		background: var(--accent);
-	}
-	.fab:active {
-		transform: translateY(0);
-	}
-	.fab-plus {
-		font-family: var(--display);
-		font-size: 1.55rem;
-		line-height: 0.9;
-		font-weight: 300;
-		color: var(--accent);
-		transition: color 220ms;
-		display: inline-block;
-	}
-	.fab:hover .fab-plus {
-		color: var(--surface);
-	}
-	.fab-text {
-		white-space: nowrap;
-	}
-
-	.user-links {
-		display: flex;
-		gap: 0.6rem;
-		align-items: center;
 	}
 
 	/* ─── Chooser sheet (Vide / Depuis un modèle) ─── */
@@ -2839,30 +3852,6 @@
 		font-size: 1.6rem;
 		letter-spacing: -0.01em;
 	}
-	.modal-close {
-		flex-shrink: 0;
-		background: transparent;
-		border: 1px solid var(--hairline);
-		color: var(--ink-2);
-		width: 2.1rem;
-		height: 2.1rem;
-		border-radius: 999px;
-		display: grid;
-		place-items: center;
-		cursor: pointer;
-		font-size: 1.05rem;
-		font-weight: 400;
-		transition:
-			background 150ms,
-			border-color 150ms,
-			color 150ms;
-	}
-	.modal-close:hover {
-		background: var(--bg);
-		border-color: var(--hairline-2);
-		color: var(--ink);
-	}
-
 	.modal-body {
 		display: flex;
 		flex-direction: column;
@@ -2881,6 +3870,71 @@
 		letter-spacing: 0.22em;
 		color: var(--ink-3);
 		font-weight: 700;
+	}
+	.inline-cat-trigger {
+		align-self: flex-start;
+		font-family: var(--ui);
+		font-size: 0.74rem;
+		font-weight: 600;
+		color: var(--accent);
+		background: transparent;
+		border: 1px dashed var(--hairline-2);
+		border-radius: 999px;
+		padding: 0.28rem 0.7rem;
+		cursor: pointer;
+		transition:
+			background 160ms,
+			border-color 160ms;
+	}
+	.inline-cat-trigger:hover {
+		background: var(--accent-soft);
+		border-color: var(--accent);
+	}
+	.inline-cat {
+		display: flex;
+		gap: 0.4rem;
+		align-items: stretch;
+		flex-wrap: wrap;
+	}
+	.inline-cat input {
+		flex: 1;
+		min-width: 0;
+		font-family: var(--ui);
+		font-size: 0.9rem;
+		padding: 0.5rem 0.7rem;
+		border: 1px solid var(--accent);
+		border-radius: 0.45rem;
+		background: var(--surface);
+		color: var(--ink);
+	}
+	.inline-cat input:focus {
+		outline: none;
+		box-shadow: 0 0 0 3px var(--accent-soft);
+	}
+	.inline-cat button {
+		font-family: var(--ui);
+		font-size: 0.78rem;
+		font-weight: 600;
+		padding: 0.4rem 0.85rem;
+		border-radius: 999px;
+		cursor: pointer;
+		border: 0;
+		color: var(--bg);
+		background: var(--ink);
+	}
+	.inline-cat button:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+	.inline-cat .inline-cat-cancel {
+		background: transparent;
+		color: var(--ink-2);
+		border: 1px solid var(--hairline-2);
+	}
+	.inline-cat-err {
+		color: var(--danger);
+		font-size: 0.78rem;
+		margin: 0;
 	}
 	.modal-body input,
 	.modal-body select {
@@ -3198,45 +4252,6 @@
 		justify-content: flex-end;
 		margin-top: 0.4rem;
 	}
-	.btn-ghost,
-	.btn-primary {
-		padding: 0.75rem 1.2rem;
-		border-radius: 999px;
-		font-family: var(--ui);
-		font-size: 0.9rem;
-		font-weight: 600;
-		cursor: pointer;
-		transition:
-			background 180ms,
-			border-color 180ms,
-			color 180ms,
-			transform 180ms;
-	}
-	.btn-ghost {
-		background: transparent;
-		color: var(--ink-2);
-		border: 1px solid var(--hairline-2);
-	}
-	.btn-ghost:hover:not(:disabled) {
-		background: var(--bg);
-		color: var(--ink);
-	}
-	.btn-primary {
-		background: var(--ink);
-		color: var(--surface);
-		border: 1px solid var(--ink);
-	}
-	.btn-primary:hover:not(:disabled) {
-		background: var(--accent);
-		border-color: var(--accent);
-		transform: translateY(-1px);
-	}
-	.btn-primary:disabled,
-	.btn-ghost:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-
 	.form-error {
 		margin: 0;
 		color: var(--danger);
@@ -3329,12 +4344,6 @@
 		.row-mono,
 		.row-day {
 			grid-row: 1;
-		}
-		.fab-text {
-			display: none;
-		}
-		.fab {
-			padding: 1rem;
 		}
 		.hero {
 			padding: 2rem 1.25rem 1.4rem;

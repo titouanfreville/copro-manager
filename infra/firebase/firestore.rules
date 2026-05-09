@@ -2,16 +2,26 @@ rules_version = '2';
 
 // copro-manager — Firestore security rules.
 //
-// All authenticated foyer members can read everything (single-copro,
-// two-foyer scope per AGENTS.md "locked decisions"). All writes go through
-// the Go API (Admin SDK, which bypasses these rules). The rules below
-// therefore only need to gate reads at the auth layer; client-side writes
+// All authenticated foyer members can read everything EXCEPT
+// `push_subscriptions` (which carries Web Push crypto material — auth
+// secret + p256dh + endpoint URL — and is API-only). Single-copro,
+// two-foyer scope per AGENTS.md "locked decisions". All writes go through
+// the Go API (Admin SDK, which bypasses these rules); client-side writes
 // are explicitly refused.
 //
 // Deploy with `infra/firebase/deploy-rules.sh` after editing.
 
 service cloud.firestore {
   match /databases/{database}/documents {
+    // Push subscriptions hold credentials another authenticated foyer
+    // member could use to spoof signed pushes. API-only; clients never
+    // need to read these directly (the toggle UI calls /push/availability
+    // server-side instead).
+    match /push_subscriptions/{subscription=**} {
+      allow read, write: if false;
+    }
+
+    // Default for everything else: auth-gated read, server-only write.
     match /{document=**} {
       allow read: if request.auth != null;
       allow write: if false;

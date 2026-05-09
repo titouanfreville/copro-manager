@@ -45,13 +45,20 @@ variable "allow_unauthenticated" {
   default     = true
 }
 
-variable "runtime_roles" {
-  description = "IAM roles granted to the Cloud Run runtime SA"
-  type        = list(string)
-  default = [
-    "roles/datastore.user",
-    "roles/firebase.sdkAdminServiceAgent",
-    "roles/firebaseauth.admin",
-    "roles/storage.objectAdmin",
-  ]
+variable "runtime_service_account_email" {
+  description = "Email of the runtime SA used by the Cloud Run service. Created externally so the caller can grant secret/bucket IAM without circular module dependencies."
+  type        = string
+}
+
+# Secret Manager secrets mounted as files into the container.
+# IAM (`roles/secretmanager.secretAccessor`) must be granted by the caller —
+# the module stays neutral so the env stack can audit secret access.
+variable "secret_files" {
+  description = "Secret Manager secrets to mount as files in the container"
+  type = list(object({
+    secret_id = string # Secret name in Secret Manager (project-scoped)
+    mount_dir = string # Directory inside the container (e.g. /etc/secrets)
+    file_name = string # File name inside mount_dir (e.g. prod.yml)
+  }))
+  default = []
 }

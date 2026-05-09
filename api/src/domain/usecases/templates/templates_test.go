@@ -50,6 +50,10 @@ func (m *mockTemplatesStore) ListDue(ctx context.Context, cutoff time.Time) ([]e
 	}
 	return nil, args.Error(1)
 }
+func (m *mockTemplatesStore) CountByCategory(ctx context.Context, categoryID string) (int, error) {
+	args := m.Called(ctx, categoryID)
+	return args.Int(0), args.Error(1)
+}
 
 type mockFoyersStore struct{ mock.Mock }
 

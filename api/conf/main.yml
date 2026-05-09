@@ -39,6 +39,17 @@ storage:
   # have roles/iam.serviceAccountTokenCreator on the chosen SA.
   signing_service_account: ""
 
+push:
+  # Web Push VAPID keys. Generate locally with:
+  #   go run github.com/SherClockHolmes/webpush-go/cmd/webpush-go@latest vapid
+  # Public key is also exposed to the SvelteKit app at build time via
+  # PUBLIC_VAPID_PUBLIC_KEY. Empty locally → push fan-out is a no-op
+  # (in-app feed still works).
+  private_key: ""
+  public_key: ""
+  subject: "mailto:dev@example.invalid"
+  ttl_seconds: 86400
+
 middlewares:
   allow_bypass: false
   bypass_auth_key: ""

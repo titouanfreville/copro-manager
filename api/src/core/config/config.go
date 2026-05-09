@@ -9,6 +9,7 @@ import (
 	"github.com/titouanfreville/copro-manager/api/src/servers/api/middlewares"
 	"github.com/titouanfreville/copro-manager/api/src/services/firestore"
 	"github.com/titouanfreville/copro-manager/api/src/services/otel"
+	pushsvc "github.com/titouanfreville/copro-manager/api/src/services/push"
 	"github.com/titouanfreville/copro-manager/api/src/services/storage"
 	"github.com/titouanfreville/copro-manager/api/src/services/zap"
 )
@@ -19,6 +20,7 @@ type Config struct {
 	Logger      zap.Config         `yaml:"logger"`
 	Firestore   firestore.Config   `yaml:"firestore"`
 	Storage     storage.Config     `yaml:"storage"`
+	Push        pushsvc.Config     `yaml:"push"`
 	Middlewares middlewares.Config `yaml:"middlewares"`
 	OTEL        otel.Config        `yaml:"otel"`
 }

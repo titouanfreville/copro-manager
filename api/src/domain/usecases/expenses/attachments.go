@@ -231,6 +231,14 @@ func (uc *usecases) RecordAttachment(ctx context.Context, expenseID string, in R
 		return nil, err
 	}
 
+	// missing_receipt is now moot for this expense — clear every stage.
+	// Best-effort; failures don't block the attachment record.
+	if uc.alerts != nil {
+		if err := uc.alerts.ResolveMissingReceipt(ctx, expenseID); err != nil {
+			log.Warn("resolve missing-receipt alerts failed", zap.Error(err))
+		}
+	}
+
 	log.Info("Success")
 	return &att, nil
 }

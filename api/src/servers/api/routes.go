@@ -20,6 +20,7 @@ func (transport *API) initRoutes(r chi.Router) {
 		adminRouter.Post("/users/{id}/reset-password", transport.endpoints.AdminResetUserPassword)
 		// Cloud Scheduler hits this daily. Idempotent.
 		adminRouter.Post("/expense-templates/materialize-recurring", transport.endpoints.AdminMaterializeRecurring)
+		adminRouter.Post("/alerts/scan", transport.endpoints.AdminScanAlerts)
 	})
 
 	// Foyer-facing routes — Bearer Firebase ID token required. Reads run
@@ -44,6 +45,30 @@ func (transport *API) initRoutes(r chi.Router) {
 		// Lazy materialization — frontend fires on /expenses mount as a
 		// backstop to the daily Cloud Scheduler cron.
 		authed.Post("/expenses/materialize-recurring", transport.endpoints.MaterializeRecurring)
+
+		authed.Get("/settlements", transport.endpoints.ListSettlements)
+		authed.Post("/settlements", transport.endpoints.CreateSettlement)
+		authed.Patch("/settlements/{id}", transport.endpoints.UpdateSettlement)
+		authed.Delete("/settlements/{id}", transport.endpoints.DeleteSettlement)
+
+		authed.Get("/documents", transport.endpoints.ListDocuments)
+		authed.Post("/documents/upload-url", transport.endpoints.RequestDocumentUploadURL)
+		authed.Post("/documents", transport.endpoints.RecordDocument)
+		authed.Patch("/documents/{id}", transport.endpoints.UpdateDocument)
+		authed.Delete("/documents/{id}", transport.endpoints.DeleteDocument)
+		authed.Get("/documents/{id}/download-url", transport.endpoints.GetDocumentDownloadURL)
+
+		authed.Post("/categories", transport.endpoints.CreateCategory)
+		authed.Patch("/categories/{id}", transport.endpoints.UpdateCategory)
+		authed.Delete("/categories/{id}", transport.endpoints.DeleteCategory)
+
+		authed.Get("/alerts", transport.endpoints.ListAlerts)
+		authed.Post("/alerts/{id}/read", transport.endpoints.MarkAlertRead)
+		authed.Post("/alerts/{id}/dismiss", transport.endpoints.DismissAlert)
+		authed.Post("/alerts/mark-all-read", transport.endpoints.MarkAllAlertsRead)
+
+		authed.Post("/push/subscribe", transport.endpoints.PushSubscribe)
+		authed.Post("/push/unsubscribe", transport.endpoints.PushUnsubscribe)
 	})
 
 	r.NotFound(transport.endpoints.NotFound)

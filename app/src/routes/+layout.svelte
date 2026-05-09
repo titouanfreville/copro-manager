@@ -7,8 +7,10 @@
 
 	import { authState } from '$lib/auth';
 	import { computeBalance, formatBalanceEUR, type Balance } from '$lib/balance';
-	import { subscribeExpenses, subscribeFoyers } from '$lib/live';
-	import type { Expense, Foyer } from '$lib/api';
+	import InstallBanner from '$lib/components/InstallBanner.svelte';
+	import TopBar from '$lib/components/TopBar.svelte';
+	import { subscribeExpenses, subscribeFoyers, subscribeSettlements } from '$lib/live';
+	import type { Expense, Foyer, Settlement } from '$lib/api';
 
 	let { children } = $props();
 
@@ -17,11 +19,13 @@
 	// so we don't keep a Firestore listener open against a missing token.
 	let foyers = $state<Foyer[]>([]);
 	let expenses = $state<Expense[]>([]);
-	let balance = $derived<Balance | null>(computeBalance(expenses, foyers));
+	let settlements = $state<Settlement[]>([]);
+	let balance = $derived<Balance | null>(computeBalance(expenses, settlements, foyers));
 	let liveError = $state('');
 
 	let unsubFoyers: (() => void) | null = null;
 	let unsubExpenses: (() => void) | null = null;
+	let unsubSettlements: (() => void) | null = null;
 
 	// $effect re-runs only when the auth STATUS string flips — not on every
 	// re-emit of the store (e.g. token refresh) which would otherwise tear
@@ -39,34 +43,49 @@
 			};
 			if (!unsubFoyers) unsubFoyers = subscribeFoyers((rows) => (foyers = rows), onErr);
 			if (!unsubExpenses) unsubExpenses = subscribeExpenses((rows) => (expenses = rows), onErr);
+			if (!unsubSettlements)
+				unsubSettlements = subscribeSettlements((rows) => (settlements = rows), onErr);
 		} else {
 			unsubFoyers?.();
 			unsubExpenses?.();
+			unsubSettlements?.();
 			unsubFoyers = null;
 			unsubExpenses = null;
+			unsubSettlements = null;
 			foyers = [];
 			expenses = [];
+			settlements = [];
 			liveError = '';
 		}
 		return () => {
 			unsubFoyers?.();
 			unsubExpenses?.();
+			unsubSettlements?.();
 			unsubFoyers = null;
 			unsubExpenses = null;
+			unsubSettlements = null;
 		};
 	});
 
 	// Hide on:
 	//  - /login (no auth → no data)
 	//  - / (transient redirect, would flash)
-	//  - /expenses (the page already shows a full-size hero balance, the
-	//    chip would also collide with that page's user-block on mobile).
+	//  - /expenses (the page already shows a full-size hero balance).
 	let showChip = $derived(
 		$authState.status === 'signed-in' &&
 			balance !== null &&
 			$page.url.pathname !== '/login' &&
 			$page.url.pathname !== '/' &&
 			$page.url.pathname !== '/expenses'
+	);
+
+	// Routes that opt into the unified TopBar. /admin keeps its bespoke
+	// utility-class header for now.
+	let showTopBar = $derived(
+		$authState.status === 'signed-in' &&
+			$page.url.pathname !== '/login' &&
+			$page.url.pathname !== '/' &&
+			!$page.url.pathname.startsWith('/admin')
 	);
 
 	function chipText(b: Balance): string {
@@ -101,6 +120,14 @@
 	{@html pwaInfo ? pwaInfo.webManifest.linkTag : ''}
 </svelte:head>
 
+{#if $authState.status === 'signed-in' && $page.url.pathname !== '/login'}
+	<InstallBanner />
+{/if}
+
+{#if showTopBar}
+	<TopBar />
+{/if}
+
 {#if showChip && balance}
 	<button
 		type="button"
@@ -120,80 +147,76 @@
 {@render children?.()}
 
 <style>
+	/* Anchored bottom-left so it mirrors the FAB at bottom-right and
+	   stays out of the way of the unified TopBar at the top of the page. */
 	.balance-chip {
 		position: fixed;
-		top: 0.85rem;
-		right: 0.9rem;
-		z-index: 50;
+		bottom: 1.5rem;
+		left: 1rem;
+		z-index: 40;
 		display: inline-flex;
 		align-items: center;
 		gap: 0.45rem;
 		padding: 0.42rem 0.85rem 0.42rem 0.7rem;
-		font-family:
-			'Hanken Grotesk',
-			-apple-system,
-			BlinkMacSystemFont,
-			'Segoe UI',
-			system-ui,
-			sans-serif;
+		font-family: var(--ui);
 		font-size: 0.78rem;
 		font-weight: 600;
 		letter-spacing: 0.01em;
-		color: #44403a;
+		color: var(--ink-2);
 		background: rgba(255, 255, 255, 0.92);
 		backdrop-filter: blur(6px);
 		-webkit-backdrop-filter: blur(6px);
-		border: 1px solid #d8d0c1;
+		border: 1px solid var(--hairline-2);
 		border-radius: 999px;
 		box-shadow:
 			0 6px 18px rgba(20, 16, 12, 0.06),
 			0 1px 2px rgba(20, 16, 12, 0.04);
 		cursor: pointer;
 		transition:
-			transform 160ms ease,
-			box-shadow 160ms ease,
-			border-color 160ms ease,
-			background 160ms ease;
+			transform var(--dur-fast) var(--ease-out),
+			box-shadow var(--dur-fast) var(--ease-out),
+			border-color var(--dur-fast) var(--ease-out),
+			background var(--dur-fast) var(--ease-out);
 	}
 	.balance-chip:hover {
 		transform: translateY(-1px);
 		box-shadow:
 			0 10px 24px rgba(20, 16, 12, 0.08),
 			0 2px 4px rgba(20, 16, 12, 0.05);
-		border-color: #c24e2a;
+		border-color: var(--accent);
 	}
 	.balance-chip:focus-visible {
-		outline: 2px solid #c24e2a;
+		outline: 2px solid var(--accent);
 		outline-offset: 2px;
 	}
 
 	.balance-mark {
-		font-family: 'Fraunces', 'Hoefler Text', Georgia, serif;
+		font-family: var(--display);
 		font-size: 1rem;
 		line-height: 1;
 		font-style: italic;
 		transform: rotate(-30deg);
 		display: inline-block;
-		color: #c24e2a;
+		color: var(--accent);
 	}
 
 	/* Color cues without shouting — terracotta accent for either creditor,
 	   sage when even. The text already says who owes whom. */
 	.balance-even .balance-mark {
-		color: #5a7461;
+		color: var(--rdc);
 	}
 	.balance-even {
-		color: #4f6e5c;
+		color: var(--ok);
 	}
 	.balance-rdc-creditor .balance-text,
 	.balance-1er-creditor .balance-text {
-		color: #161310;
+		color: var(--ink);
 	}
 
 	@media (max-width: 480px) {
 		.balance-chip {
-			top: 0.55rem;
-			right: 0.55rem;
+			bottom: 1rem;
+			left: 0.6rem;
 			padding: 0.35rem 0.7rem 0.35rem 0.55rem;
 			font-size: 0.72rem;
 		}

@@ -1,4 +1,10 @@
-import { onAuthStateChanged, signInWithEmailAndPassword, signOut, type User } from 'firebase/auth';
+import {
+	onAuthStateChanged,
+	sendPasswordResetEmail,
+	signInWithEmailAndPassword,
+	signOut,
+	type User
+} from 'firebase/auth';
 import { writable, type Readable } from 'svelte/store';
 import { browser } from '$app/environment';
 import { firebaseAuth } from './firebase';
@@ -62,6 +68,36 @@ function friendlyAuthError(err: unknown): Error {
 
 export async function logout(): Promise<void> {
 	await signOut(firebaseAuth());
+}
+
+/**
+ * Trigger Firebase's email-based password reset. Errors are swallowed
+ * intentionally to avoid email enumeration — the caller shows the same
+ * confirmation message regardless of whether the address is registered
+ * (PRD FR5 / Story 1.4).
+ */
+export async function requestPasswordReset(email: string): Promise<void> {
+	const trimmed = email.trim();
+	if (!trimmed) throw new Error('Email requis.');
+	try {
+		await sendPasswordResetEmail(firebaseAuth(), trimmed);
+	} catch (err) {
+		// Surface only obviously bad-input errors; everything else gets
+		// silenced so unregistered emails look identical to registered ones.
+		if (typeof err === 'object' && err !== null && 'code' in err) {
+			const code = (err as { code: string }).code;
+			if (code === 'auth/invalid-email') {
+				throw new Error('Adresse email invalide.');
+			}
+			if (code === 'auth/network-request-failed') {
+				throw new Error('Connexion réseau impossible. Vérifiez votre accès internet.');
+			}
+			if (code === 'auth/too-many-requests') {
+				throw new Error('Trop de tentatives. Réessayez dans quelques minutes.');
+			}
+		}
+		// Quiet fallback — let the caller show the generic confirmation.
+	}
 }
 
 export async function idToken(): Promise<string | null> {

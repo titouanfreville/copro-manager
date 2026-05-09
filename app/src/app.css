@@ -1,3 +1,61 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* ─── Design tokens ────────────────────────────────────────────────
+   Single source of truth for the editorial / parchment aesthetic.
+   Fraunces (display, italic accents) paired with Hanken Grotesk (UI).
+   Terracotta accent on warm parchment, sage for "even / peaceful".
+   ────────────────────────────────────────────────────────────────── */
+:root {
+	/* Surfaces */
+	--bg: #faf8f4;
+	--bg-warm: #f5f0e6;
+	--surface: #ffffff;
+
+	/* Ink scale */
+	--ink: #161310;
+	--ink-2: #44403a;
+	--ink-3: #7a7268;
+	--ink-4: #aea69a;
+
+	/* Hairlines */
+	--hairline: #e8e2d6;
+	--hairline-2: #d8d0c1;
+
+	/* Accents */
+	--accent: #c24e2a;
+	--accent-deep: #8f3a1f;
+	--accent-soft: #f4e2d8;
+	--rdc: #5a7461;
+	--rdc-soft: #e6ede5;
+	--clay: #9e6a4d;
+	--clay-soft: #f1e3d8;
+
+	/* Status */
+	--danger: #b73223;
+	--ok: #4f6e5c;
+
+	/* Type */
+	--display: 'Fraunces', 'Hoefler Text', Georgia, serif;
+	--ui:
+		'Hanken Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+
+	/* Motion */
+	--ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+	--dur-fast: 140ms;
+	--dur-base: 220ms;
+}
+
+html,
+body {
+	background: var(--bg);
+	color: var(--ink);
+	font-family: var(--ui);
+}
+
+/* Selection — terracotta tint, no contrast jump */
+::selection {
+	background: var(--accent-soft);
+	color: var(--ink);
+}

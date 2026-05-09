@@ -1,6 +1,6 @@
 terraform {
   backend "gcs" {
-    bucket = "copro-manager-tfstate"
+    bucket = "copro-494909-tfstate"
     prefix = "env/main"
   }
 }

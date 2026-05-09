@@ -138,6 +138,28 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
+// CountByCategory returns the number of expenses referencing the given
+// category. Single-field equality query — Firestore auto-indexes it.
+func (s *Store) CountByCategory(ctx context.Context, categoryID string) (int, error) {
+	iter := s.client.Collection(collection).
+		Where("category_id", "==", categoryID).
+		Documents(ctx)
+	defer iter.Stop()
+
+	count := 0
+	for {
+		_, err := iter.Next()
+		if errors.Is(err, iterator.Done) {
+			break
+		}
+		if err != nil {
+			return 0, fmt.Errorf("expenses: count by category: %w", err)
+		}
+		count++
+	}
+	return count, nil
+}
+
 // FindByNameAndDate is the upsert lookup used by the CSV import. Returns
 // (nil, nil) when no match exists.
 func (s *Store) FindByNameAndDate(ctx context.Context, name string, date time.Time) (*entities.Expense, error) {

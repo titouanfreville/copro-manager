@@ -126,8 +126,11 @@ func (c *Client) SignedPutURL(ctx context.Context, objectName, contentType strin
 	if sizeBytes <= 0 {
 		return "", fmt.Errorf("storage: signed put url: sizeBytes must be > 0")
 	}
+	// Don't repeat Content-Type in `Headers` — `ContentType` already adds
+	// it to the canonical signature, and duplicating it leaves the URL
+	// with `X-Goog-SignedHeaders=content-type;content-type;…` which the
+	// browser can't possibly satisfy.
 	headers := []string{
-		"Content-Type:" + contentType,
 		fmt.Sprintf("x-goog-content-length-range:0,%d", sizeBytes),
 	}
 	url, err := gcs.SignedURL(c.bucket, objectName, &gcs.SignedURLOptions{

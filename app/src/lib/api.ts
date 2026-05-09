@@ -135,6 +135,92 @@ export interface CreateExpenseInput {
 	amount_pending?: boolean;
 }
 
+// ─── Alerts ─────────────────────────────────────────────────────────
+
+export type AlertKind =
+	| 'pending_completion'
+	| 'missing_receipt'
+	| 'peer_expense_added'
+	| 'balance_seasonal';
+
+export interface Alert {
+	id: string;
+	copro_id: string;
+	kind: AlertKind;
+	recipient_foyer_id: string;
+	dedupe_key: string;
+	payload?: Record<string, unknown>;
+	deep_link?: string;
+	fired_at: string;
+	read_at?: string;
+	resolved_at?: string;
+	dismissed_at?: string;
+}
+
+/**
+ * A standalone uploaded document — insurance contract, syndic statement,
+ * AGE minutes, plumber estimate, etc. Per-expense attachments live in the
+ * expense subcollection (see ExpenseAttachment in $lib/live); this type
+ * is for documents that stand on their own.
+ *
+ * `group` is a free-text tag (devis / facture / contrat / attestation /
+ * etc.) used to fold similar docs together in the archive view. Server
+ * normalizes to lowercase + trimmed on write so display variants merge.
+ */
+export interface Document {
+	id: string;
+	copro_id: string;
+	category_id: string;
+	group?: string;
+	title: string;
+	description?: string;
+	object_name: string;
+	content_type: string;
+	size_bytes: number;
+	original_filename: string;
+	uploaded_at: string;
+	uploaded_by: string;
+	linked_expense_id?: string;
+}
+
+export interface CreateDocumentInput {
+	title: string;
+	description?: string;
+	category_id: string;
+	group?: string;
+}
+
+/**
+ * A balance-reducing transfer between the two foyers, recorded as a
+ * distinct ledger row (PRD FR40 — settlements never mutate expenses).
+ * `expense_ids` audit-link the expenses considered covered by this
+ * transfer; the link is informational only and does NOT toggle
+ * Expense.settled. Balance math is straight subtraction of `amount_cents`.
+ */
+export interface Settlement {
+	id: string;
+	copro_id: string;
+	from_foyer_id: string;
+	to_foyer_id: string;
+	amount_cents: number;
+	currency: string;
+	date: string;
+	note?: string;
+	expense_ids?: string[];
+	created_at: string;
+	updated_at: string;
+}
+
+export interface CreateSettlementInput {
+	from_foyer_id: string;
+	to_foyer_id: string;
+	amount_cents: number;
+	currency?: string;
+	date: string;
+	note?: string;
+	expense_ids?: string[];
+}
+
 export async function api<T>(path: string, opts: ApiOptions = {}): Promise<T> {
 	const token = await idToken();
 

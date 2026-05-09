@@ -5,24 +5,32 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/alerts"
 	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/categories"
+	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/documents"
 	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/expenses"
 	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/foyers"
 	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/home"
+	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/push"
+	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/settlements"
 	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/templates"
 	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/users"
 )
 
 // Usecases aggregates all domain usecases.
 type Usecases struct {
-	logger     *zap.Logger
-	since      time.Time
-	Home       home.Usecases
-	Foyers     foyers.Usecases
-	Users      users.Usecases
-	Categories categories.Usecases
-	Expenses   expenses.Usecases
-	Templates  templates.Usecases
+	logger      *zap.Logger
+	since       time.Time
+	Home        home.Usecases
+	Foyers      foyers.Usecases
+	Users       users.Usecases
+	Categories  categories.Usecases
+	Expenses    expenses.Usecases
+	Templates   templates.Usecases
+	Settlements settlements.Usecases
+	Documents   documents.Usecases
+	Alerts      alerts.Usecases
+	Push        push.Usecases
 }
 
 // New creates the root usecases aggregator.
@@ -34,16 +42,24 @@ func New(
 	initCategories categories.Usecases,
 	initExpenses expenses.Usecases,
 	initTemplates templates.Usecases,
+	initSettlements settlements.Usecases,
+	initDocuments documents.Usecases,
+	initAlerts alerts.Usecases,
+	initPush push.Usecases,
 ) *Usecases {
 	return &Usecases{
-		logger:     logger.Named("usecases"),
-		since:      time.Now(),
-		Home:       initHome,
-		Foyers:     initFoyers,
-		Users:      initUsers,
-		Categories: initCategories,
-		Expenses:   initExpenses,
-		Templates:  initTemplates,
+		logger:      logger.Named("usecases"),
+		since:       time.Now(),
+		Home:        initHome,
+		Foyers:      initFoyers,
+		Users:       initUsers,
+		Categories:  initCategories,
+		Expenses:    initExpenses,
+		Templates:   initTemplates,
+		Settlements: initSettlements,
+		Documents:   initDocuments,
+		Alerts:      initAlerts,
+		Push:        initPush,
 	}
 }
 

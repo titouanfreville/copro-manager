@@ -82,12 +82,20 @@ type Usecases interface {
 	MaterializeRecurring(ctx context.Context, actorUserID string) (*MaterializeSummary, error)
 }
 
+// AlertsHook is the narrow contract this package needs from the alerts
+// usecase. Defined locally so templates stays a leaf and Go's structural
+// typing makes alerts.Usecases satisfy it without an import.
+type AlertsHook interface {
+	FirePendingCompletion(ctx context.Context, exp entities.Expense) (*entities.Alert, error)
+}
+
 type usecases struct {
 	logger    *zap.Logger
 	templates interfaces.TemplatesStore
 	foyers    interfaces.FoyersStore
 	copros    interfaces.CoprosStore
 	expenses  expenses.Usecases
+	alerts    AlertsHook
 	now       func() time.Time
 	location  *time.Location
 }
@@ -95,12 +103,15 @@ type usecases struct {
 // New builds a templates usecase. The materializer pins to Europe/Paris so
 // "every 1st of the month at midnight" fires on the calendar day the user
 // expects, regardless of the Cloud Run instance's local time (UTC).
+//
+// `alerts` may be nil during tests — every hook call is guarded.
 func New(
 	logger *zap.Logger,
 	templates interfaces.TemplatesStore,
 	foyers interfaces.FoyersStore,
 	copros interfaces.CoprosStore,
 	expenses expenses.Usecases,
+	alerts AlertsHook,
 ) Usecases {
 	loc, err := time.LoadLocation("Europe/Paris")
 	if err != nil {
@@ -114,6 +125,7 @@ func New(
 		foyers:    foyers,
 		copros:    copros,
 		expenses:  expenses,
+		alerts:    alerts,
 		now:       time.Now,
 		location:  loc,
 	}
@@ -305,10 +317,23 @@ func (uc *usecases) materializeOne(ctx context.Context, t *entities.ExpenseTempl
 			TemplateID:       t.ID,
 			AmountPending:    t.AmountDefaultCents == 0,
 		}
-		if _, err := uc.expenses.Create(ctx, input); err != nil {
+		exp, err := uc.expenses.Create(ctx, input)
+		if err != nil {
 			return created, fmt.Errorf("create expense from template %q: %w", t.ID, err)
 		}
 		created++
+
+		// pending_completion: fire when the template minted a row that
+		// needs a manual amount fill-in (template's AmountDefault == 0).
+		// Best-effort — failures don't undo the materialized expense.
+		if uc.alerts != nil && exp != nil && exp.AmountPending {
+			if _, alertErr := uc.alerts.FirePendingCompletion(ctx, *exp); alertErr != nil {
+				uc.logger.Warn("pending_completion alert fire failed",
+					zap.String("template_id", t.ID),
+					zap.String("expense_id", exp.ID),
+					zap.Error(alertErr))
+			}
+		}
 
 		next, err := entities.AdvanceDate(cursor, t.Frequency, t.DayOfMonth)
 		if err != nil {

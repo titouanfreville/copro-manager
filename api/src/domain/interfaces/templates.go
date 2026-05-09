@@ -21,4 +21,8 @@ type TemplatesStore interface {
 	// MaterializeRecurring; the caller advances NextOccurrenceAt in a
 	// follow-up Update call after each instance is created.
 	ListDue(ctx context.Context, cutoff time.Time) ([]entities.ExpenseTemplate, error)
+
+	// CountByCategory returns the number of templates referencing the
+	// given category. Consumed by the categories-delete cascade rejection.
+	CountByCategory(ctx context.Context, categoryID string) (int, error)
 }

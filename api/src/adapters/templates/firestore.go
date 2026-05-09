@@ -107,6 +107,28 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
+// CountByCategory returns the number of templates referencing the given
+// category. Single-field equality query — Firestore auto-indexes it.
+func (s *Store) CountByCategory(ctx context.Context, categoryID string) (int, error) {
+	iter := s.client.Collection(collection).
+		Where("category_id", "==", categoryID).
+		Documents(ctx)
+	defer iter.Stop()
+
+	count := 0
+	for {
+		_, err := iter.Next()
+		if errors.Is(err, iterator.Done) {
+			break
+		}
+		if err != nil {
+			return 0, fmt.Errorf("templates: count by category: %w", err)
+		}
+		count++
+	}
+	return count, nil
+}
+
 // ListDue queries on schedule_active + next_occurrence_at. Firestore
 // supports composite queries on these fields without an explicit index when
 // the inequality is on a single field.

@@ -12,7 +12,17 @@ export default defineConfig(({ command }) => ({
 			// because the 2-foyer scope tolerates a one-navigation lag — a
 			// full app reload mid-create would nuke the user's typed form.
 			registerType: 'autoUpdate',
-			strategies: 'generateSW',
+			// `injectManifest` instead of `generateSW` so we can ship our
+			// own SW source (push + notificationclick handlers). SvelteKit
+			// compiles `src/service-worker.ts` to
+			// `.svelte-kit/output/client/service-worker.js` automatically;
+			// we just need to point the plugin at the compiled output's
+			// default name. Workbox replaces `self.__WB_MANIFEST` with the
+			// precache list at build time.
+			strategies: 'injectManifest',
+			injectManifest: {
+				globPatterns: ['**/*.{js,css,html,svg,png,ico,webp}']
+			},
 			manifest: {
 				name: 'Copro Manager',
 				short_name: 'Copro',
@@ -30,24 +40,6 @@ export default defineConfig(({ command }) => ({
 						sizes: '512x512',
 						type: 'image/png',
 						purpose: 'maskable'
-					}
-				]
-			},
-			workbox: {
-				globPatterns: ['**/*.{js,css,html,svg,png,ico,webp}'],
-				runtimeCaching: [
-					{
-						// GCS document URLs are signed with a short TTL (≤1h per
-						// NFR12). `CacheFirst` would happily serve a stale 403
-						// long after the signature expired; `NetworkFirst` falls
-						// back to cache only when offline.
-						urlPattern: /^https:\/\/storage\.googleapis\.com\/.*/i,
-						handler: 'NetworkFirst',
-						options: {
-							cacheName: 'gcs-documents',
-							networkTimeoutSeconds: 5,
-							expiration: { maxEntries: 64, maxAgeSeconds: 60 * 60 }
-						}
 					}
 				]
 			},

@@ -73,6 +73,27 @@ func (s *Store) FindByID(ctx context.Context, id string) (*entities.Category, er
 	return &out, nil
 }
 
+func (s *Store) Create(ctx context.Context, c entities.Category) error {
+	if _, err := s.client.Collection(collection).Doc(c.ID).Create(ctx, entityToDoc(c)); err != nil {
+		return fmt.Errorf("categories: create: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) Update(ctx context.Context, c entities.Category) error {
+	if _, err := s.client.Collection(collection).Doc(c.ID).Set(ctx, entityToDoc(c)); err != nil {
+		return fmt.Errorf("categories: update: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) Delete(ctx context.Context, id string) error {
+	if _, err := s.client.Collection(collection).Doc(id).Delete(ctx); err != nil {
+		return fmt.Errorf("categories: delete: %w", err)
+	}
+	return nil
+}
+
 // EnsureSeeded uses Create-if-missing for each seed entry — uses .Create which
 // errors on existing docs, so we swallow AlreadyExists.
 func (s *Store) EnsureSeeded(ctx context.Context, seed []entities.Category) error {

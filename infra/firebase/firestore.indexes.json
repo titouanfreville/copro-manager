@@ -7,7 +7,29 @@
 				{ "fieldPath": "schedule_active", "order": "ASCENDING" },
 				{ "fieldPath": "next_occurrence_at", "order": "ASCENDING" }
 			]
+		},
+		{
+			"collectionGroup": "alerts",
+			"queryScope": "COLLECTION",
+			"fields": [
+				{ "fieldPath": "copro_id", "order": "ASCENDING" },
+				{ "fieldPath": "dedupe_key", "order": "ASCENDING" }
+			]
+		},
+		{
+			"collectionGroup": "alerts",
+			"queryScope": "COLLECTION",
+			"fields": [
+				{ "fieldPath": "recipient_foyer_id", "order": "ASCENDING" },
+				{ "fieldPath": "fired_at", "order": "DESCENDING" }
+			]
 		}
 	],
-	"fieldOverrides": []
+	"fieldOverrides": [
+		{
+			"collectionGroup": "alerts",
+			"fieldPath": "resolved_at",
+			"ttl": true
+		}
+	]
 }

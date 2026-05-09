@@ -65,3 +65,4 @@ api/conf/local.yml
 # Personal expense CSVs (used as import sources, not committed)
 data/*.csv
 private/*.csv
+/infra/terraform/env/env.tfplan

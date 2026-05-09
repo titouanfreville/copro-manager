@@ -214,8 +214,9 @@ export async function attachFile(
 	// Direct browser→GCS PUT. The signed URL pins Content-Type AND the
 	// content-length range — we MUST send the same content-type the server
 	// returned (which may differ from our local guess if the server
-	// normalized e.g. parameters).
-	await putToGCSWithProgress(issued.upload_url, blob, issued.content_type, opts);
+	// normalized e.g. parameters), AND the same x-goog-content-length-range
+	// header the server signed in (V4 rejects on header mismatch).
+	await putToGCSWithProgress(issued.upload_url, blob, issued.content_type, blob.size, opts);
 
 	try {
 		return await api<Attachment>(
@@ -251,16 +252,16 @@ function putToGCSWithProgress(
 	url: string,
 	blob: Blob,
 	contentType: string,
+	sizeBytes: number,
 	opts: AttachOptions
 ): Promise<void> {
 	return new Promise<void>((resolve, reject) => {
 		const xhr = new XMLHttpRequest();
 		xhr.open('PUT', url, true);
 		xhr.setRequestHeader('Content-Type', contentType);
-		// `x-goog-content-length-range` is signed in by the server. The
-		// browser doesn't let us set it directly, but GCS reads it from the
-		// signed URL itself, so the upload still passes the bound check
-		// based on the actual Content-Length the browser sends.
+		// V4 signs the exact value we hand back here; sending a different
+		// (or missing) value flips GCS to a 400 SignatureDoesNotMatch.
+		xhr.setRequestHeader('x-goog-content-length-range', `0,${sizeBytes}`);
 		if (opts.onProgress) {
 			xhr.upload.onprogress = (e) => {
 				if (e.lengthComputable) opts.onProgress?.(e.loaded, e.total);

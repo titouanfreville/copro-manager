@@ -11,7 +11,19 @@ import {
 	type Unsubscribe
 } from 'firebase/firestore';
 
-import type { Attachment, Category, ExpenseTemplate, Expense, Foyer, Frequency } from './api';
+import { query, where } from 'firebase/firestore';
+
+import type {
+	Alert,
+	Attachment,
+	Category,
+	Document,
+	ExpenseTemplate,
+	Expense,
+	Foyer,
+	Frequency,
+	Settlement
+} from './api';
 import { firebaseFirestore } from './firebase';
 
 type SnapData = Record<string, unknown>;
@@ -262,6 +274,134 @@ export function subscribeTemplates(
 				updated_at: isoOf(d.updated_at)
 			}) satisfies ExpenseTemplate,
 		(rows) => rows.sort((a, b) => a.name.localeCompare(b.name, 'fr')),
+		onData,
+		onError
+	);
+}
+
+// ─── Documents (standalone) ─────────────────────────────────────────
+export function subscribeDocuments(
+	onData: (rows: Document[]) => void,
+	onError?: (err: Error) => void
+): Unsubscribe {
+	return subscribe<Document>(
+		'documents',
+		(snap, d) =>
+			({
+				id: snap.id,
+				copro_id: String(d.copro_id ?? ''),
+				category_id: String(d.category_id ?? ''),
+				group: typeof d.group === 'string' && d.group ? d.group : undefined,
+				title: String(d.title ?? ''),
+				description: typeof d.description === 'string' ? d.description : undefined,
+				object_name: String(d.object_name ?? ''),
+				content_type: String(d.content_type ?? ''),
+				size_bytes: Number(d.size_bytes ?? 0),
+				original_filename: String(d.original_filename ?? ''),
+				uploaded_at: isoOf(d.uploaded_at),
+				uploaded_by: String(d.uploaded_by ?? ''),
+				linked_expense_id:
+					typeof d.linked_expense_id === 'string' && d.linked_expense_id
+						? d.linked_expense_id
+						: undefined
+			}) satisfies Document,
+		(rows) => rows.sort((a, b) => b.uploaded_at.localeCompare(a.uploaded_at)),
+		onData,
+		onError
+	);
+}
+
+// ─── Alerts ─────────────────────────────────────────────────────────
+//
+// Scoped to a foyer rather than fetching the whole copro: the backend
+// addresses alerts to a specific foyer, and surfacing a member's own
+// foyer's alerts is the only intended UX. We use a Firestore query
+// (`recipient_foyer_id == X`) to avoid pulling the other foyer's feed
+// down the wire.
+
+export function subscribeAlertsForFoyer(
+	foyerID: string,
+	onData: (rows: Alert[]) => void,
+	onError?: (err: Error) => void
+): Unsubscribe {
+	if (!foyerID) {
+		// Defensive: callers should pass a non-empty foyer. Return a
+		// no-op unsubscribe so the consumer's $effect cleanup doesn't
+		// crash in the loading state.
+		onData([]);
+		return () => {};
+	}
+	const q = query(
+		collection(firebaseFirestore(), 'alerts'),
+		where('recipient_foyer_id', '==', foyerID)
+	);
+	return onSnapshot(
+		q,
+		(snap) => {
+			const rows: Alert[] = [];
+			for (const d of snap.docs) {
+				const data = d.data() as SnapData;
+				const kind = data.kind;
+				if (
+					kind !== 'pending_completion' &&
+					kind !== 'missing_receipt' &&
+					kind !== 'peer_expense_added' &&
+					kind !== 'balance_seasonal'
+				) {
+					continue;
+				}
+				rows.push({
+					id: d.id,
+					copro_id: String(data.copro_id ?? ''),
+					kind,
+					recipient_foyer_id: String(data.recipient_foyer_id ?? ''),
+					dedupe_key: String(data.dedupe_key ?? ''),
+					payload:
+						data.payload && typeof data.payload === 'object'
+							? (data.payload as Record<string, unknown>)
+							: undefined,
+					deep_link: typeof data.deep_link === 'string' ? data.deep_link : undefined,
+					fired_at: isoOf(data.fired_at),
+					read_at: isoOrUndef(data.read_at),
+					resolved_at: isoOrUndef(data.resolved_at),
+					dismissed_at: isoOrUndef(data.dismissed_at)
+				});
+			}
+			rows.sort((a, b) => b.fired_at.localeCompare(a.fired_at));
+			onData(rows);
+		},
+		(err) => onError?.(err)
+	);
+}
+
+// ─── Settlements ─────────────────────────────────────────────────────
+export function subscribeSettlements(
+	onData: (rows: Settlement[]) => void,
+	onError?: (err: Error) => void
+): Unsubscribe {
+	return subscribe<Settlement>(
+		'settlements',
+		(snap, d) =>
+			({
+				id: snap.id,
+				copro_id: String(d.copro_id ?? ''),
+				from_foyer_id: String(d.from_foyer_id ?? ''),
+				to_foyer_id: String(d.to_foyer_id ?? ''),
+				amount_cents: Number(d.amount_cents ?? 0),
+				currency: String(d.currency ?? 'EUR'),
+				date: isoOf(d.date),
+				note: typeof d.note === 'string' ? d.note : undefined,
+				expense_ids: Array.isArray(d.expense_ids)
+					? (d.expense_ids as unknown[]).filter((x): x is string => typeof x === 'string')
+					: undefined,
+				created_at: isoOf(d.created_at),
+				updated_at: isoOf(d.updated_at)
+			}) satisfies Settlement,
+		(rows) =>
+			rows.sort((a, b) => {
+				if (a.date !== b.date) return b.date.localeCompare(a.date);
+				return b.created_at.localeCompare(a.created_at);
+			}),
 		onData,
 		onError
 	);

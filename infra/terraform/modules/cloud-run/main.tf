@@ -1,16 +1,3 @@
-resource "google_service_account" "runtime" {
-  account_id   = "${var.service_name}-runtime"
-  display_name = "Runtime SA for ${var.service_name}"
-  project      = var.project_id
-}
-
-resource "google_project_iam_member" "runtime_roles" {
-  for_each = toset(var.runtime_roles)
-  project  = var.project_id
-  role     = each.value
-  member   = "serviceAccount:${google_service_account.runtime.email}"
-}
-
 resource "google_cloud_run_v2_service" "this" {
   name     = var.service_name
   project  = var.project_id
@@ -18,7 +5,7 @@ resource "google_cloud_run_v2_service" "this" {
   ingress  = "INGRESS_TRAFFIC_ALL"
 
   template {
-    service_account = google_service_account.runtime.email
+    service_account = var.runtime_service_account_email
 
     scaling {
       min_instance_count = 0
@@ -46,6 +33,32 @@ resource "google_cloud_run_v2_service" "this" {
         content {
           name  = env.key
           value = env.value
+        }
+      }
+
+      dynamic "volume_mounts" {
+        for_each = var.secret_files
+        content {
+          name       = volume_mounts.value.secret_id
+          mount_path = volume_mounts.value.mount_dir
+        }
+      }
+    }
+
+    dynamic "volumes" {
+      for_each = var.secret_files
+      content {
+        name = volumes.value.secret_id
+        secret {
+          secret = volumes.value.secret_id
+          items {
+            version = "latest"
+            path    = volumes.value.file_name
+            # 0444 = world-read, owner-write. Cloud Run runs the container
+            # as a non-root UID; 0400 (256 decimal) was unreadable by the
+            # app process and silently disabled config loading.
+            mode = 292
+          }
         }
       }
     }

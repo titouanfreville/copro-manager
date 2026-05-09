@@ -21,4 +21,9 @@ type ExpensesStore interface {
 	Create(ctx context.Context, expense entities.Expense) error
 	Update(ctx context.Context, expense entities.Expense) error
 	Delete(ctx context.Context, id string) error
+
+	// CountByCategory returns the number of expenses referencing the
+	// given category. Consumed by the categories-delete cascade rejection
+	// (PRD FR12).
+	CountByCategory(ctx context.Context, categoryID string) (int, error)
 }

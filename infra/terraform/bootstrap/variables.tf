@@ -1,7 +1,7 @@
 variable "project_id" {
   description = "GCP project ID for copro-manager"
   type        = string
-  default     = "copro-manager"
+  default     = "copro-494909"
 }
 
 variable "region" {

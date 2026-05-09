@@ -1,12 +1,16 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { ApiError } from '$lib/api';
-	import { authState, logout } from '$lib/auth';
+	import { authState } from '$lib/auth';
+	import Button from '$lib/components/Button.svelte';
+	import Fab from '$lib/components/Fab.svelte';
+	import IconButton from '$lib/components/IconButton.svelte';
 	import {
 		subscribeCategories,
 		subscribeFoyers,
 		subscribeTemplates
 	} from '$lib/live';
+	import { createCategory } from '$lib/categories';
 	import { createTemplate, deleteTemplate, updateTemplate } from '$lib/templates';
 	import type {
 		Category,
@@ -68,6 +72,40 @@
 	let endDate = $state('');
 	let saving = $state(false);
 	let formError = $state('');
+
+	// Inline category creator (pick "+ Nouvelle catégorie" without leaving the modal).
+	let inlineCatCreating = $state(false);
+	let inlineCatName = $state('');
+	let inlineCatSaving = $state(false);
+	let inlineCatError = $state('');
+	function openInlineCat() {
+		inlineCatCreating = true;
+		inlineCatName = '';
+		inlineCatError = '';
+	}
+	function closeInlineCat() {
+		inlineCatCreating = false;
+		inlineCatName = '';
+		inlineCatError = '';
+	}
+	async function confirmInlineCat() {
+		if (inlineCatSaving) return;
+		const name = inlineCatName.trim();
+		if (name.length < 2) {
+			inlineCatError = 'Au moins 2 caractères.';
+			return;
+		}
+		inlineCatSaving = true;
+		try {
+			const c = await createCategory({ name });
+			categoryId = c.id;
+			closeInlineCat();
+		} catch (err) {
+			inlineCatError = err instanceof ApiError ? `${err.code}: ${err.message}` : String(err);
+		} finally {
+			inlineCatSaving = false;
+		}
+	}
 	let deletingId = $state<string | null>(null);
 
 	function eurosToCents(v: string): number {
@@ -269,31 +307,9 @@
 	}
 </script>
 
-<svelte:head>
-	<link rel="preconnect" href="https://fonts.googleapis.com" />
-	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
-	<link
-		href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,300;1,9..144,400&family=Hanken+Grotesk:wght@400;500;600;700&display=swap"
-		rel="stylesheet"
-	/>
-</svelte:head>
-
 <svelte:window onkeydown={onKeydown} />
 
 <div class="page">
-	<header class="top">
-		<a class="brand" href="/expenses">
-			<span class="brand-mark">C/M</span>
-			<span class="brand-name">Copro <em>Manager</em></span>
-		</a>
-		<div class="user-block">
-			{#if $authState.status === 'signed-in'}
-				<span class="user-email">{$authState.user.email}</span>
-				<button class="link" onclick={() => logout()}>Déconnexion</button>
-			{/if}
-		</div>
-	</header>
-
 	{#if $authState.status !== 'signed-in'}
 		<main class="main">
 			<p class="muted center">Chargement…</p>
@@ -307,7 +323,13 @@
 					Pré-réglages de dépenses récurrentes — utilisés à la création d'une nouvelle ligne, et déclenchés
 					automatiquement chaque jour à 06:00 (Paris) quand la planification est activée.
 				</p>
-				<a class="hero-back" href="/expenses">← retour au registre</a>
+				<IconButton
+					icon="chevron-left"
+					href="/expenses"
+					variant="text"
+					size="sm"
+					aria-label="Retour aux dépenses"
+				/>
 			</section>
 
 			{#if liveError}
@@ -322,9 +344,7 @@
 					<p class="empty-sub">
 						Crée un modèle pour les factures qui reviennent — eau, électricité, taxe foncière…
 					</p>
-					<button type="button" class="btn-primary" onclick={openCreate}>
-						Nouveau modèle
-					</button>
+					<Button variant="primary" mark onclick={openCreate}>Nouveau modèle</Button>
 				</section>
 			{:else}
 				<section class="cards">
@@ -376,17 +396,19 @@
 								<p class="card-note">{t.note}</p>
 							{/if}
 							<div class="card-actions">
-								<button type="button" class="card-action" onclick={() => openEdit(t)}>
-									Modifier
-								</button>
-								<button
-									type="button"
-									class="card-action card-action-danger"
+								<IconButton
+									icon="edit"
+									aria-label="Modifier {t.name}"
+									onclick={() => openEdit(t)}
+								/>
+								<IconButton
+									icon="delete"
+									variant="danger"
+									aria-label="Supprimer {t.name}"
+									aria-busy={deletingId === t.id}
 									onclick={() => onDelete(t)}
 									disabled={deletingId !== null}
-								>
-									{deletingId === t.id ? '…' : 'Supprimer'}
-								</button>
+								/>
 							</div>
 						</article>
 					{/each}
@@ -394,10 +416,7 @@
 			{/if}
 		</main>
 
-		<button class="fab" type="button" onclick={openCreate} aria-label="Nouveau modèle">
-			<span class="fab-plus" aria-hidden="true">+</span>
-			<span class="fab-text">Nouveau modèle</span>
-		</button>
+		<Fab onclick={openCreate} aria-label="Nouveau modèle">Nouveau modèle</Fab>
 
 		{#if modalOpen}
 			<div
@@ -414,7 +433,12 @@
 							{isEditing ? 'Modifier le modèle' : 'Créer un modèle'}
 						</h2>
 					</div>
-					<button class="modal-close" type="button" onclick={closeModal} aria-label="Fermer">×</button>
+					<IconButton
+						icon="close"
+						variant="text"
+						aria-label="Fermer"
+						onclick={closeModal}
+					/>
 				</header>
 
 				<form class="modal-body" onsubmit={onSubmit}>
@@ -446,6 +470,34 @@
 									<option value={c.id}>{c.name}</option>
 								{/each}
 							</select>
+							{#if inlineCatCreating}
+								<div class="inline-cat">
+									<input
+										type="text"
+										bind:value={inlineCatName}
+										placeholder="Nom de la catégorie"
+										onkeydown={(e) => {
+											if (e.key === 'Enter') {
+												e.preventDefault();
+												confirmInlineCat();
+											}
+										}}
+									/>
+									<button type="button" onclick={confirmInlineCat} disabled={inlineCatSaving}>
+										{inlineCatSaving ? '…' : 'Créer'}
+									</button>
+									<button type="button" class="inline-cat-cancel" onclick={closeInlineCat} disabled={inlineCatSaving}>
+										Annuler
+									</button>
+								</div>
+								{#if inlineCatError}
+									<p class="inline-cat-err" role="alert">{inlineCatError}</p>
+								{/if}
+							{:else}
+								<button type="button" class="inline-cat-trigger" onclick={openInlineCat}>
+									+ Nouvelle catégorie
+								</button>
+							{/if}
 						</label>
 					</div>
 
@@ -547,16 +599,14 @@
 					{/if}
 
 					<div class="modal-actions">
-						<button type="button" class="btn-ghost" onclick={closeModal} disabled={saving}>
-							Annuler
-						</button>
-						<button type="submit" class="btn-primary" disabled={saving}>
+						<Button variant="ghost" onclick={closeModal} disabled={saving}>Annuler</Button>
+						<Button type="submit" variant="primary" mark disabled={saving}>
 							{#if saving}
 								{isEditing ? 'Mise à jour…' : 'Création…'}
 							{:else}
 								{isEditing ? 'Mettre à jour' : 'Créer'}
 							{/if}
-						</button>
+						</Button>
 					</div>
 				</form>
 			</div>
@@ -596,63 +646,6 @@
 		color: var(--ink);
 		background: var(--bg);
 	}
-	.top {
-		max-width: 720px;
-		margin: 0 auto;
-		padding: 1.4rem 1.25rem 0.5rem;
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 1rem;
-	}
-	.brand {
-		display: flex;
-		align-items: center;
-		gap: 0.6rem;
-		text-decoration: none;
-		color: var(--ink);
-	}
-	.brand-mark {
-		font-family: var(--display);
-		font-style: italic;
-		font-size: 1rem;
-		padding: 0.42rem 0.55rem;
-		border: 1px solid var(--ink);
-		border-radius: 999px;
-	}
-	.brand-name {
-		font-family: var(--display);
-		font-size: 1.05rem;
-	}
-	.brand-name em {
-		font-style: italic;
-		color: var(--ink-2);
-	}
-	.user-block {
-		display: flex;
-		flex-direction: column;
-		align-items: flex-end;
-		gap: 0.15rem;
-	}
-	.user-email {
-		font-size: 0.78rem;
-		color: var(--ink-3);
-		max-width: 14rem;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-	.link {
-		background: transparent;
-		border: 0;
-		color: var(--accent);
-		font-size: 0.78rem;
-		cursor: pointer;
-		padding: 0;
-		text-decoration: underline;
-		text-underline-offset: 3px;
-	}
-
 	.main {
 		max-width: 720px;
 		margin: 0 auto;
@@ -680,16 +673,6 @@
 		max-width: 38rem;
 		margin: 0 0 1rem;
 	}
-	.hero-back {
-		font-size: 0.78rem;
-		color: var(--accent);
-		text-decoration: none;
-		text-underline-offset: 3px;
-	}
-	.hero-back:hover {
-		text-decoration: underline;
-	}
-
 	.cards {
 		display: grid;
 		gap: 0.85rem;
@@ -765,31 +748,6 @@
 		gap: 0.4rem;
 		justify-content: flex-end;
 	}
-	.card-action {
-		font-size: 0.7rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.14em;
-		color: var(--ink-2);
-		background: transparent;
-		border: 1px solid var(--hairline-2);
-		border-radius: 999px;
-		padding: 0.25rem 0.65rem;
-		cursor: pointer;
-	}
-	.card-action:hover:not(:disabled) {
-		background: var(--bg);
-		color: var(--ink);
-	}
-	.card-action:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-	.card-action-danger:hover:not(:disabled) {
-		color: var(--danger);
-		border-color: rgba(183, 50, 35, 0.3);
-		background: rgba(183, 50, 35, 0.06);
-	}
 	.foyer-tag {
 		display: inline-block;
 		padding: 0.16rem 0.5rem;
@@ -839,38 +797,6 @@
 		margin-bottom: 1rem;
 	}
 
-	/* ─── FAB ─── */
-	.fab {
-		position: fixed;
-		bottom: 1.4rem;
-		right: 1.4rem;
-		z-index: 30;
-		display: inline-flex;
-		align-items: center;
-		gap: 0.5rem;
-		background: var(--ink);
-		color: var(--bg);
-		border: 0;
-		border-radius: 999px;
-		padding: 0.85rem 1.3rem 0.85rem 1.05rem;
-		font-family: var(--ui);
-		font-size: 0.85rem;
-		font-weight: 600;
-		cursor: pointer;
-		box-shadow:
-			0 16px 32px rgba(20, 16, 12, 0.18),
-			0 4px 10px rgba(20, 16, 12, 0.08);
-		transition: transform 160ms ease;
-	}
-	.fab:hover {
-		transform: translateY(-1px);
-	}
-	.fab-plus {
-		font-size: 1.2rem;
-		line-height: 1;
-		font-family: var(--display);
-	}
-
 	/* ─── Modal ─── */
 	.modal-backdrop {
 		position: fixed;
@@ -915,15 +841,6 @@
 		font-size: 1.4rem;
 		margin: 0;
 	}
-	.modal-close {
-		background: transparent;
-		border: 0;
-		font-size: 1.4rem;
-		color: var(--ink-3);
-		cursor: pointer;
-		line-height: 1;
-		padding: 0.2rem 0.4rem;
-	}
 	.modal-body {
 		padding: 0.6rem 1.4rem 1.2rem;
 		display: flex;
@@ -941,6 +858,68 @@
 		letter-spacing: 0.14em;
 		color: var(--ink-4);
 		font-weight: 600;
+	}
+	.inline-cat-trigger {
+		align-self: flex-start;
+		font-family: var(--ui);
+		font-size: 0.74rem;
+		font-weight: 600;
+		color: var(--accent);
+		background: transparent;
+		border: 1px dashed var(--hairline-2);
+		border-radius: 999px;
+		padding: 0.28rem 0.7rem;
+		cursor: pointer;
+	}
+	.inline-cat-trigger:hover {
+		background: var(--accent-soft);
+		border-color: var(--accent);
+	}
+	.inline-cat {
+		display: flex;
+		gap: 0.4rem;
+		flex-wrap: wrap;
+		margin-top: 0.3rem;
+	}
+	.inline-cat input {
+		flex: 1;
+		min-width: 0;
+		font-family: var(--ui);
+		font-size: 0.9rem;
+		padding: 0.45rem 0.65rem;
+		border: 1px solid var(--accent);
+		border-radius: 0.45rem;
+		background: var(--surface);
+		color: var(--ink);
+	}
+	.inline-cat input:focus {
+		outline: none;
+		box-shadow: 0 0 0 3px var(--accent-soft);
+	}
+	.inline-cat button {
+		font-family: var(--ui);
+		font-size: 0.78rem;
+		font-weight: 600;
+		padding: 0.4rem 0.85rem;
+		border-radius: 999px;
+		cursor: pointer;
+		border: 0;
+		color: var(--bg);
+		background: var(--ink);
+	}
+	.inline-cat button:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+	.inline-cat .inline-cat-cancel {
+		background: transparent;
+		color: var(--ink-2);
+		border: 1px solid var(--hairline-2);
+	}
+	.inline-cat-err {
+		color: var(--danger);
+		font-size: 0.78rem;
+		margin: 0.2rem 0 0;
 	}
 	.lbl-aside {
 		text-transform: none;
@@ -1063,33 +1042,6 @@
 		gap: 0.5rem;
 		padding-top: 0.4rem;
 	}
-	.btn-ghost {
-		font-family: var(--ui);
-		font-size: 0.85rem;
-		font-weight: 600;
-		color: var(--ink-2);
-		background: transparent;
-		border: 1px solid var(--hairline-2);
-		border-radius: 999px;
-		padding: 0.5rem 1rem;
-		cursor: pointer;
-	}
-	.btn-primary {
-		font-family: var(--ui);
-		font-size: 0.85rem;
-		font-weight: 600;
-		color: var(--bg);
-		background: var(--ink);
-		border: 0;
-		border-radius: 999px;
-		padding: 0.55rem 1.1rem;
-		cursor: pointer;
-	}
-	.btn-primary:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-
 	.center {
 		text-align: center;
 	}

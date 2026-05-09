@@ -35,6 +35,10 @@ jobs:
       PUBLIC_FIREBASE_APP_ID: ${{ vars.PUBLIC_FIREBASE_APP_ID }}
       PUBLIC_FIREBASE_AUTH_DOMAIN: ${{ vars.PUBLIC_FIREBASE_AUTH_DOMAIN }}
       PUBLIC_FIREBASE_STORAGE_BUCKET: ${{ vars.PUBLIC_FIREBASE_STORAGE_BUCKET }}
+      # VAPID public key, inlined into the SvelteKit build at compile time.
+      # Without this var, push.ts:VAPID_PUBLIC_KEY is '' and the entire
+      # Web Push flow no-ops in production.
+      PUBLIC_VAPID_PUBLIC_KEY: ${{ vars.PUBLIC_VAPID_PUBLIC_KEY }}
 
     steps:
       - uses: actions/checkout@v4
@@ -54,11 +58,13 @@ jobs:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
           service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
 
+      # Deploy via the firebase CLI directly so we use the WIF-issued ADC
+      # written by `auth@v2` instead of a long-lived JSON key. Drops the
+      # `FIREBASE_SERVICE_ACCOUNT_JSON` secret dependency entirely.
+      - name: Install Firebase CLI
+        run: npm install -g firebase-tools@13
+
       - name: Deploy to Firebase Hosting
-        uses: FirebaseExtended/action-hosting-deploy@v0
-        with:
-          repoToken: ${{ secrets.GITHUB_TOKEN }}
-          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
-          projectId: copro-manager
-          channelId: live
-          entryPoint: app
+        env:
+          FIREBASE_PROJECT_ID: ${{ vars.PUBLIC_FIREBASE_PROJECT_ID }}
+        run: firebase deploy --only hosting --project "$FIREBASE_PROJECT_ID" --non-interactive
