@@ -17,7 +17,7 @@
 import { cleanupOutdatedCaches, precacheAndRoute } from "workbox-precaching";
 import { CacheableResponsePlugin } from "workbox-cacheable-response";
 import { NetworkFirst } from "workbox-strategies";
-import { registerRoute } from "workbox-routing";
+import { NavigationRoute, registerRoute } from "workbox-routing";
 
 declare const self: ServiceWorkerGlobalScope;
 
@@ -41,6 +41,21 @@ function safeDeepLink(raw: string | undefined): string {
 
 cleanupOutdatedCaches();
 precacheAndRoute(self.__WB_MANIFEST);
+
+// SPA navigation fallback. Without it the SW never calls respondWith()
+// on navigations (the precache list has no HTML — adapter-static writes
+// index.html *after* vite-plugin-pwa scans), so Chrome considers the SW
+// "not effectively used" and refuses to surface the install prompt —
+// only the Add-to-Home-Screen shortcut.
+registerRoute(
+  new NavigationRoute(
+    new NetworkFirst({
+      cacheName: "spa-shell",
+      networkTimeoutSeconds: 5,
+      plugins: [new CacheableResponsePlugin({ statuses: [200] })],
+    }),
+  ),
+);
 
 // GCS signed URLs are short-lived (≤1h per NFR12); falling back to a
 // stale cache would return a 403, not a useful response. NetworkFirst

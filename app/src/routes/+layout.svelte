@@ -116,10 +116,6 @@
 	});
 </script>
 
-<svelte:head>
-	{@html pwaInfo ? pwaInfo.webManifest.linkTag : ''}
-</svelte:head>
-
 {#if $authState.status === 'signed-in' && $page.url.pathname !== '/login'}
 	<InstallBanner />
 {/if}
