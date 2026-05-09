@@ -15,6 +15,49 @@ const config = {
     alias: {
       $lib: "src/lib",
     },
+    // Inline scripts SvelteKit emits for hydration change every build,
+    // so we let it compute their hashes and inject a <meta> CSP. The
+    // header-level CSP in firebase.json keeps only directives that
+    // can't live in meta (frame-ancestors).
+    csp: {
+      mode: "hash",
+      directives: {
+        "default-src": ["self"],
+        "script-src": [
+          "self",
+          "wasm-unsafe-eval",
+          "https://www.googletagmanager.com",
+          "https://apis.google.com",
+          "https://www.gstatic.com",
+        ],
+        "style-src": ["self", "unsafe-inline", "https://fonts.googleapis.com"],
+        "img-src": [
+          "self",
+          "data:",
+          "blob:",
+          "https://storage.googleapis.com",
+          "https://*.googleusercontent.com",
+        ],
+        "font-src": ["self", "data:", "https://fonts.gstatic.com"],
+        "connect-src": [
+          "self",
+          "https://*.googleapis.com",
+          "https://*.firebaseio.com",
+          "https://*.firebaseapp.com",
+          "https://identitytoolkit.googleapis.com",
+          "https://securetoken.googleapis.com",
+          "https://firestore.googleapis.com",
+          "https://storage.googleapis.com",
+          "wss://*.firebaseio.com",
+        ],
+        "frame-src": ["self", "https://*.firebaseapp.com"],
+        "worker-src": ["self", "blob:"],
+        "manifest-src": ["self"],
+        "base-uri": ["self"],
+        "form-action": ["self"],
+        "object-src": ["none"],
+      },
+    },
   },
 };
 
