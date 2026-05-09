@@ -58,6 +58,10 @@ func (m *mockExpensesStore) CountByCategory(ctx context.Context, categoryID stri
 	args := m.Called(ctx, categoryID)
 	return args.Int(0), args.Error(1)
 }
+func (m *mockExpensesStore) CountByMeterReadingPeriod(ctx context.Context, period string) (int, error) {
+	args := m.Called(ctx, period)
+	return args.Int(0), args.Error(1)
+}
 
 type mockAttachmentsStore struct{ mock.Mock }
 
@@ -186,6 +190,13 @@ func (m *mockStorage) Delete(ctx context.Context, objectName string) error {
 }
 func (m *mockStorage) DeletePrefix(ctx context.Context, prefix string) error {
 	return m.Called(ctx, prefix).Error(0)
+}
+func (m *mockStorage) Read(ctx context.Context, objectName string) ([]byte, error) {
+	args := m.Called(ctx, objectName)
+	if v := args.Get(0); v != nil {
+		return v.([]byte), args.Error(1)
+	}
+	return nil, args.Error(1)
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────
@@ -461,5 +472,133 @@ func TestDelete(t *testing.T) {
 			expStore.AssertNotCalled(t, "Delete", mock.Anything, mock.Anything)
 			stor.AssertNotCalled(t, "DeletePrefix", mock.Anything, mock.Anything)
 		})
+	})
+}
+
+// ─── water_3_meters ────────────────────────────────────────────────
+
+type mockMetersStore struct{ mock.Mock }
+
+func (m *mockMetersStore) List(ctx context.Context) ([]entities.MeterReading, error) {
+	args := m.Called(ctx)
+	if v := args.Get(0); v != nil {
+		return v.([]entities.MeterReading), args.Error(1)
+	}
+	return nil, args.Error(1)
+}
+func (m *mockMetersStore) FindByPeriod(ctx context.Context, period string) (*entities.MeterReading, error) {
+	args := m.Called(ctx, period)
+	if v := args.Get(0); v != nil {
+		return v.(*entities.MeterReading), args.Error(1)
+	}
+	return nil, args.Error(1)
+}
+func (m *mockMetersStore) FindPriorPeriod(ctx context.Context, period string) (*entities.MeterReading, error) {
+	args := m.Called(ctx, period)
+	if v := args.Get(0); v != nil {
+		return v.(*entities.MeterReading), args.Error(1)
+	}
+	return nil, args.Error(1)
+}
+func (m *mockMetersStore) FindNextPeriod(ctx context.Context, period string) (*entities.MeterReading, error) {
+	args := m.Called(ctx, period)
+	if v := args.Get(0); v != nil {
+		return v.(*entities.MeterReading), args.Error(1)
+	}
+	return nil, args.Error(1)
+}
+func (m *mockMetersStore) Create(ctx context.Context, r entities.MeterReading) error {
+	return m.Called(ctx, r).Error(0)
+}
+func (m *mockMetersStore) Update(ctx context.Context, r entities.MeterReading) error {
+	return m.Called(ctx, r).Error(0)
+}
+func (m *mockMetersStore) Delete(ctx context.Context, period string) error {
+	return m.Called(ctx, period).Error(0)
+}
+func (m *mockMetersStore) SetPhoto(ctx context.Context, period string, kind entities.MeterPhotoKind, object, contentType string, sizeBytes int64) error {
+	return m.Called(ctx, period, kind, object, contentType, sizeBytes).Error(0)
+}
+func (m *mockMetersStore) ClearPhoto(ctx context.Context, period string, kind entities.MeterPhotoKind) error {
+	return m.Called(ctx, period, kind).Error(0)
+}
+
+func TestComputeWaterShares(t *testing.T) {
+	Convey("Given a current period 2026-06 and prior 2026-05 with valid deltas", t, func() {
+		ctx := context.Background()
+		uc, _, _, _, _, _, _ := newUC()
+		mt := &mockMetersStore{}
+		uc.meters = mt
+
+		curr := &entities.MeterReading{
+			Period: "2026-06", CommonM3: 110.000, RDCM3: 220.000, PremierM3: 330.000,
+		}
+		prev := &entities.MeterReading{
+			Period: "2026-05", CommonM3: 100.000, RDCM3: 210.000, PremierM3: 320.000,
+		}
+		// Δcommon = 10, Δrdc = 10, Δ1er = 10 → total = 30
+		// share_rdc = (10 + 10/2) / 30 = 0.5 → 50% of 16430 = 8215
+		// share_1er = 16430 - 8215 = 8215
+		mt.On("FindByPeriod", ctx, "2026-06").Return(curr, nil)
+		mt.On("FindPriorPeriod", ctx, "2026-06").Return(prev, nil)
+
+		shareRDC, share1er, err := uc.computeWaterShares(ctx, CreateInput{
+			AmountCents:        16430,
+			MeterReadingPeriod: "2026-06",
+		}, rdc)
+
+		Convey("It splits 50/50 (equal deltas, common goes half-half)", func() {
+			So(err, ShouldBeNil)
+			So(shareRDC, ShouldEqual, 8215)
+			So(share1er, ShouldEqual, 8215)
+			So(shareRDC+share1er, ShouldEqual, 16430)
+		})
+	})
+
+	Convey("Rejects when no prior period exists", t, func() {
+		ctx := context.Background()
+		uc, _, _, _, _, _, _ := newUC()
+		mt := &mockMetersStore{}
+		uc.meters = mt
+		mt.On("FindByPeriod", ctx, "2026-05").Return(&entities.MeterReading{Period: "2026-05"}, nil)
+		mt.On("FindPriorPeriod", ctx, "2026-05").Return(nil, nil)
+
+		_, _, err := uc.computeWaterShares(ctx, CreateInput{
+			AmountCents:        10000,
+			MeterReadingPeriod: "2026-05",
+		}, rdc)
+		So(err, ShouldNotBeNil)
+	})
+
+	Convey("Rejects on negative deltas (meter rolled back)", t, func() {
+		ctx := context.Background()
+		uc, _, _, _, _, _, _ := newUC()
+		mt := &mockMetersStore{}
+		uc.meters = mt
+		curr := &entities.MeterReading{Period: "2026-06", CommonM3: 100, RDCM3: 195, PremierM3: 320}
+		prev := &entities.MeterReading{Period: "2026-05", CommonM3: 90, RDCM3: 200, PremierM3: 300}
+		mt.On("FindByPeriod", ctx, "2026-06").Return(curr, nil)
+		mt.On("FindPriorPeriod", ctx, "2026-06").Return(prev, nil)
+		_, _, err := uc.computeWaterShares(ctx, CreateInput{
+			AmountCents:        10000,
+			MeterReadingPeriod: "2026-06",
+		}, rdc)
+		So(err, ShouldNotBeNil)
+	})
+
+	Convey("Rejects when total consumption is zero", t, func() {
+		ctx := context.Background()
+		uc, _, _, _, _, _, _ := newUC()
+		mt := &mockMetersStore{}
+		uc.meters = mt
+		same := &entities.MeterReading{Period: "2026-06", CommonM3: 100, RDCM3: 200, PremierM3: 300}
+		prev := &entities.MeterReading{Period: "2026-05", CommonM3: 100, RDCM3: 200, PremierM3: 300}
+		mt.On("FindByPeriod", ctx, "2026-06").Return(same, nil)
+		mt.On("FindPriorPeriod", ctx, "2026-06").Return(prev, nil)
+		_, _, err := uc.computeWaterShares(ctx, CreateInput{
+			AmountCents:        10000,
+			MeterReadingPeriod: "2026-06",
+		}, rdc)
+		So(err, ShouldNotBeNil)
 	})
 }

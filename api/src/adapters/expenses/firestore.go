@@ -20,25 +20,26 @@ import (
 const collection = "expenses"
 
 type expenseDoc struct {
-	ID               string                    `firestore:"id"`
-	CoproID          string                    `firestore:"copro_id"`
-	Name             string                    `firestore:"name"`
-	AmountCents      int                       `firestore:"amount_cents"`
-	Currency         string                    `firestore:"currency"`
-	Date             time.Time                 `firestore:"date"`
-	PaymentDate      *time.Time                `firestore:"payment_date,omitempty"`
-	PayerFoyerID     string                    `firestore:"payer_foyer_id"`
-	CategoryID       string                    `firestore:"category_id"`
-	DistributionMode entities.DistributionMode `firestore:"distribution_mode"`
-	ShareRDCCents    int                       `firestore:"share_rdc_cents"`
-	Share1erCents    int                       `firestore:"share_1er_cents"`
-	Settled          bool                      `firestore:"settled"`
-	SettledAt        *time.Time                `firestore:"settled_at,omitempty"`
-	Note             string                    `firestore:"note,omitempty"`
-	TemplateID       string                    `firestore:"template_id,omitempty"`
-	AmountPending    bool                      `firestore:"amount_pending,omitempty"`
-	CreatedAt        time.Time                 `firestore:"created_at"`
-	UpdatedAt        time.Time                 `firestore:"updated_at"`
+	ID                 string                    `firestore:"id"`
+	CoproID            string                    `firestore:"copro_id"`
+	Name               string                    `firestore:"name"`
+	AmountCents        int                       `firestore:"amount_cents"`
+	Currency           string                    `firestore:"currency"`
+	Date               time.Time                 `firestore:"date"`
+	PaymentDate        *time.Time                `firestore:"payment_date,omitempty"`
+	PayerFoyerID       string                    `firestore:"payer_foyer_id"`
+	CategoryID         string                    `firestore:"category_id"`
+	DistributionMode   entities.DistributionMode `firestore:"distribution_mode"`
+	ShareRDCCents      int                       `firestore:"share_rdc_cents"`
+	Share1erCents      int                       `firestore:"share_1er_cents"`
+	Settled            bool                      `firestore:"settled"`
+	SettledAt          *time.Time                `firestore:"settled_at,omitempty"`
+	Note               string                    `firestore:"note,omitempty"`
+	TemplateID         string                    `firestore:"template_id,omitempty"`
+	AmountPending      bool                      `firestore:"amount_pending,omitempty"`
+	MeterReadingPeriod string                    `firestore:"meter_reading_period,omitempty"`
+	CreatedAt          time.Time                 `firestore:"created_at"`
+	UpdatedAt          time.Time                 `firestore:"updated_at"`
 }
 
 // attachmentDoc is the on-disk shape of a single attachment. Lives in the
@@ -160,6 +161,29 @@ func (s *Store) CountByCategory(ctx context.Context, categoryID string) (int, er
 	return count, nil
 }
 
+// CountByMeterReadingPeriod returns the number of expenses whose
+// meter_reading_period equals the given YYYY-MM. Single-field equality
+// — Firestore auto-indexes it.
+func (s *Store) CountByMeterReadingPeriod(ctx context.Context, period string) (int, error) {
+	iter := s.client.Collection(collection).
+		Where("meter_reading_period", "==", period).
+		Documents(ctx)
+	defer iter.Stop()
+
+	count := 0
+	for {
+		_, err := iter.Next()
+		if errors.Is(err, iterator.Done) {
+			break
+		}
+		if err != nil {
+			return 0, fmt.Errorf("expenses: count by meter period: %w", err)
+		}
+		count++
+	}
+	return count, nil
+}
+
 // FindByNameAndDate is the upsert lookup used by the CSV import. Returns
 // (nil, nil) when no match exists.
 func (s *Store) FindByNameAndDate(ctx context.Context, name string, date time.Time) (*entities.Expense, error) {
@@ -189,25 +213,26 @@ func (s *Store) FindByNameAndDate(ctx context.Context, name string, date time.Ti
 // Attachments are loaded separately via AttachmentsStore (subcollection).
 func docToEntity(d expenseDoc) entities.Expense {
 	return entities.Expense{
-		ID:               d.ID,
-		CoproID:          d.CoproID,
-		Name:             d.Name,
-		AmountCents:      d.AmountCents,
-		Currency:         d.Currency,
-		Date:             d.Date,
-		PaymentDate:      d.PaymentDate,
-		PayerFoyerID:     d.PayerFoyerID,
-		CategoryID:       d.CategoryID,
-		DistributionMode: d.DistributionMode,
-		ShareRDCCents:    d.ShareRDCCents,
-		Share1erCents:    d.Share1erCents,
-		Settled:          d.Settled,
-		SettledAt:        d.SettledAt,
-		Note:             d.Note,
-		TemplateID:       d.TemplateID,
-		AmountPending:    d.AmountPending,
-		CreatedAt:        d.CreatedAt,
-		UpdatedAt:        d.UpdatedAt,
+		ID:                 d.ID,
+		CoproID:            d.CoproID,
+		Name:               d.Name,
+		AmountCents:        d.AmountCents,
+		Currency:           d.Currency,
+		Date:               d.Date,
+		PaymentDate:        d.PaymentDate,
+		PayerFoyerID:       d.PayerFoyerID,
+		CategoryID:         d.CategoryID,
+		DistributionMode:   d.DistributionMode,
+		ShareRDCCents:      d.ShareRDCCents,
+		Share1erCents:      d.Share1erCents,
+		Settled:            d.Settled,
+		SettledAt:          d.SettledAt,
+		Note:               d.Note,
+		TemplateID:         d.TemplateID,
+		AmountPending:      d.AmountPending,
+		MeterReadingPeriod: d.MeterReadingPeriod,
+		CreatedAt:          d.CreatedAt,
+		UpdatedAt:          d.UpdatedAt,
 	}
 }
 
@@ -215,25 +240,26 @@ func docToEntity(d expenseDoc) entities.Expense {
 // are intentionally NOT persisted on the doc — they live in a subcollection.
 func entityToDoc(e entities.Expense) expenseDoc {
 	return expenseDoc{
-		ID:               e.ID,
-		CoproID:          e.CoproID,
-		Name:             e.Name,
-		AmountCents:      e.AmountCents,
-		Currency:         e.Currency,
-		Date:             e.Date,
-		PaymentDate:      e.PaymentDate,
-		PayerFoyerID:     e.PayerFoyerID,
-		CategoryID:       e.CategoryID,
-		DistributionMode: e.DistributionMode,
-		ShareRDCCents:    e.ShareRDCCents,
-		Share1erCents:    e.Share1erCents,
-		Settled:          e.Settled,
-		SettledAt:        e.SettledAt,
-		Note:             e.Note,
-		TemplateID:       e.TemplateID,
-		AmountPending:    e.AmountPending,
-		CreatedAt:        e.CreatedAt,
-		UpdatedAt:        e.UpdatedAt,
+		ID:                 e.ID,
+		CoproID:            e.CoproID,
+		Name:               e.Name,
+		AmountCents:        e.AmountCents,
+		Currency:           e.Currency,
+		Date:               e.Date,
+		PaymentDate:        e.PaymentDate,
+		PayerFoyerID:       e.PayerFoyerID,
+		CategoryID:         e.CategoryID,
+		DistributionMode:   e.DistributionMode,
+		ShareRDCCents:      e.ShareRDCCents,
+		Share1erCents:      e.Share1erCents,
+		Settled:            e.Settled,
+		SettledAt:          e.SettledAt,
+		Note:               e.Note,
+		TemplateID:         e.TemplateID,
+		AmountPending:      e.AmountPending,
+		MeterReadingPeriod: e.MeterReadingPeriod,
+		CreatedAt:          e.CreatedAt,
+		UpdatedAt:          e.UpdatedAt,
 	}
 }
 

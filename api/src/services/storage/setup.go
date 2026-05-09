@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 	"time"
 
@@ -181,6 +182,22 @@ func (c *Client) Head(ctx context.Context, objectName string) (interfaces.Object
 		SizeBytes:   attrs.Size,
 		ContentType: attrs.ContentType,
 	}, true, nil
+}
+
+// Read pulls the full object body. Used by the OCR pipeline to
+// color-sample meter photos. Caller is responsible for size bounds —
+// meter photos cap at 10 MB upstream.
+func (c *Client) Read(ctx context.Context, objectName string) ([]byte, error) {
+	rc, err := c.storage.Bucket(c.bucket).Object(objectName).NewReader(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("storage: open %q: %w", objectName, err)
+	}
+	defer func() { _ = rc.Close() }()
+	out, err := io.ReadAll(rc)
+	if err != nil {
+		return nil, fmt.Errorf("storage: read %q: %w", objectName, err)
+	}
+	return out, nil
 }
 
 // Delete removes a single object. Idempotent — missing objects are no-ops.

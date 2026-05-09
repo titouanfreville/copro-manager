@@ -25,13 +25,20 @@ const (
 	// AlertKindBalanceSeasonal fires on Jul 15 + Dec 15 if the running
 	// balance is non-zero. Recipient: both foyers.
 	AlertKindBalanceSeasonal AlertKind = "balance_seasonal"
+
+	// AlertKindMonthlyMeterReading fires on the 28th of the month
+	// (Europe/Paris) when no MeterReading exists for the current YYYY-MM.
+	// Recipient: both foyers (water consumption is shared — either
+	// member can act). Auto-resolves when the reading lands.
+	AlertKindMonthlyMeterReading AlertKind = "monthly_meter_reading"
 )
 
 // IsKnownAlertKind reports whether the value is one of the supported kinds.
 func IsKnownAlertKind(k AlertKind) bool {
 	switch k {
 	case AlertKindPendingCompletion, AlertKindMissingReceipt,
-		AlertKindPeerExpenseAdded, AlertKindBalanceSeasonal:
+		AlertKindPeerExpenseAdded, AlertKindBalanceSeasonal,
+		AlertKindMonthlyMeterReading:
 		return true
 	}
 	return false
@@ -93,6 +100,13 @@ func DedupeKeyPeerExpenseAdded(expenseID string) string {
 // is "h1" for Jul 15, "h2" for Dec 15.
 func DedupeKeyBalanceSeasonal(year int, half string) string {
 	return fmt.Sprintf("%s:%d-%s", AlertKindBalanceSeasonal, year, half)
+}
+
+// DedupeKeyMonthlyMeterReading: one alert per period (YYYY-MM). The
+// scan suffixes the recipient foyer at fire time so the per-recipient
+// idempotency works the same as balance_seasonal.
+func DedupeKeyMonthlyMeterReading(period string) string {
+	return fmt.Sprintf("%s:%s", AlertKindMonthlyMeterReading, period)
 }
 
 // MissingReceiptStage computes the stage label for an expense aged

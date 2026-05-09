@@ -26,4 +26,10 @@ type ExpensesStore interface {
 	// given category. Consumed by the categories-delete cascade rejection
 	// (PRD FR12).
 	CountByCategory(ctx context.Context, categoryID string) (int, error)
+
+	// CountByMeterReadingPeriod returns the number of expenses whose
+	// `meter_reading_period` equals the given YYYY-MM. Consumed by the
+	// meters-delete cascade rejection — a reading can't be removed while
+	// any water_3_meters expense still references it.
+	CountByMeterReadingPeriod(ctx context.Context, period string) (int, error)
 }

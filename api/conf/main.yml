@@ -50,6 +50,15 @@ push:
   subject: "mailto:dev@example.invalid"
   ttl_seconds: 86400
 
+vision:
+  # Cloud Vision OCR for meter photos (NFR31). Per-month cap protects
+  # against runaway billing — once exceeded, OCR endpoints respond with
+  # FEATURE_CAPPED until the next month rolls over. Disable entirely by
+  # setting enabled: false. Counter lives in Firestore at
+  # stats/vision/{YYYY-MM} (single doc, atomic increment).
+  enabled: true
+  monthly_call_cap: 100
+
 middlewares:
   allow_bypass: false
   bypass_auth_key: ""

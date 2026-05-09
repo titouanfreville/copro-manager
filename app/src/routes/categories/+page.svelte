@@ -111,6 +111,8 @@
 				return 'Tantièmes';
 			case 'custom':
 				return 'Manuel';
+			case 'water_3_meters':
+				return 'Eau (3 sous-compteurs)';
 			default:
 				return 'Aucun défaut';
 		}
@@ -244,6 +246,7 @@
 							<option value="equal">50/50</option>
 							<option value="tantiemes">Tantièmes</option>
 							<option value="custom">Manuel</option>
+							<option value="water_3_meters">Eau (3 sous-compteurs)</option>
 						</select>
 					</label>
 

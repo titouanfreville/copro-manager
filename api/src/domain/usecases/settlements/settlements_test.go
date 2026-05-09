@@ -88,6 +88,10 @@ func (m *mockExpensesStore) CountByCategory(ctx context.Context, categoryID stri
 	args := m.Called(ctx, categoryID)
 	return args.Int(0), args.Error(1)
 }
+func (m *mockExpensesStore) CountByMeterReadingPeriod(ctx context.Context, period string) (int, error) {
+	args := m.Called(ctx, period)
+	return args.Int(0), args.Error(1)
+}
 
 type mockFoyersStore struct{ mock.Mock }
 

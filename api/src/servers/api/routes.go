@@ -58,6 +58,18 @@ func (transport *API) initRoutes(r chi.Router) {
 		authed.Delete("/documents/{id}", transport.endpoints.DeleteDocument)
 		authed.Get("/documents/{id}/download-url", transport.endpoints.GetDocumentDownloadURL)
 
+		authed.Get("/meters", transport.endpoints.ListMeters)
+		authed.Post("/meters", transport.endpoints.CreateMeter)
+		authed.Get("/meters/{period}", transport.endpoints.GetMeter)
+		authed.Patch("/meters/{period}", transport.endpoints.UpdateMeter)
+		authed.Delete("/meters/{period}", transport.endpoints.DeleteMeter)
+		authed.Post("/meters/{period}/photos/{kind}/upload-url", transport.endpoints.RequestMeterPhotoUploadURL)
+		authed.Post("/meters/{period}/photos/{kind}", transport.endpoints.RecordMeterPhoto)
+		authed.Get("/meters/{period}/photos/{kind}/download-url", transport.endpoints.GetMeterPhotoDownloadURL)
+		authed.Delete("/meters/{period}/photos/{kind}", transport.endpoints.DeleteMeterPhoto)
+		authed.Post("/meters/{period}/photos/{kind}/ocr", transport.endpoints.SuggestMeterPhotoValues)
+		authed.Post("/meters/ocr/{kind}", transport.endpoints.SuggestRawMeterPhotoValues)
+
 		authed.Post("/categories", transport.endpoints.CreateCategory)
 		authed.Patch("/categories/{id}", transport.endpoints.UpdateCategory)
 		authed.Delete("/categories/{id}", transport.endpoints.DeleteCategory)

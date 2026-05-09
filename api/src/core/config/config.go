@@ -11,6 +11,7 @@ import (
 	"github.com/titouanfreville/copro-manager/api/src/services/otel"
 	pushsvc "github.com/titouanfreville/copro-manager/api/src/services/push"
 	"github.com/titouanfreville/copro-manager/api/src/services/storage"
+	visionsvc "github.com/titouanfreville/copro-manager/api/src/services/vision"
 	"github.com/titouanfreville/copro-manager/api/src/services/zap"
 )
 
@@ -21,6 +22,7 @@ type Config struct {
 	Firestore   firestore.Config   `yaml:"firestore"`
 	Storage     storage.Config     `yaml:"storage"`
 	Push        pushsvc.Config     `yaml:"push"`
+	Vision      visionsvc.Config   `yaml:"vision"`
 	Middlewares middlewares.Config `yaml:"middlewares"`
 	OTEL        otel.Config        `yaml:"otel"`
 }

@@ -14,12 +14,14 @@ const AttachmentMaxPerExpense = 10
 
 // AllowedAttachmentMimeTypes is the canonical MIME whitelist. Anything else
 // is rejected before a signed URL is issued. Map values are the file
-// extension we use when minting the GCS object key.
+// extension we use when minting the GCS object key. HEIC/HEIF are
+// intentionally excluded: the SvelteKit client converts iPhone HEIC
+// uploads to JPEG via prepareForUpload before issuing the signed URL,
+// and the chrome-desktop bitmap fallback path now fails fast rather
+// than upload mismatched bytes.
 var AllowedAttachmentMimeTypes = map[string]string{
 	"image/jpeg":      ".jpg",
 	"image/png":       ".png",
-	"image/heic":      ".heic",
-	"image/heif":      ".heif",
 	"application/pdf": ".pdf",
 }
 

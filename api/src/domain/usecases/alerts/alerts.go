@@ -89,8 +89,9 @@ type Usecases interface {
 
 // ScanSummary lets the cron route render a useful response.
 type ScanSummary struct {
-	MissingReceiptFired int `json:"missing_receipt_fired"`
-	SeasonalFired       int `json:"seasonal_fired"`
+	MissingReceiptFired      int `json:"missing_receipt_fired"`
+	SeasonalFired            int `json:"seasonal_fired"`
+	MonthlyMeterReadingFired int `json:"monthly_meter_reading_fired"`
 }
 
 type usecases struct {
@@ -103,6 +104,7 @@ type usecases struct {
 	settlements interfaces.SettlementsStore
 	foyers      interfaces.FoyersStore
 	copros      interfaces.CoprosStore
+	meters      interfaces.MetersStore
 	now         func() time.Time
 	location    *time.Location
 }
@@ -120,6 +122,7 @@ func New(
 	settlements interfaces.SettlementsStore,
 	foyers interfaces.FoyersStore,
 	copros interfaces.CoprosStore,
+	meters interfaces.MetersStore,
 ) Usecases {
 	loc, err := time.LoadLocation("Europe/Paris")
 	if err != nil {
@@ -135,6 +138,7 @@ func New(
 		settlements: settlements,
 		foyers:      foyers,
 		copros:      copros,
+		meters:      meters,
 		now:         time.Now,
 		location:    loc,
 	}
@@ -394,9 +398,17 @@ func (uc *usecases) ScanTimeBased(ctx context.Context) (*ScanSummary, error) {
 		return summary, err
 	}
 
+	// Monthly meter reading: fires on the 28th of every month in
+	// Europe/Paris if the current period (YYYY-MM) has no MeterReading.
+	if err := uc.scanMonthlyMeterReading(ctx, summary); err != nil {
+		log.Error("monthly meter reading scan failed", zap.Error(err))
+		return summary, err
+	}
+
 	log.Info("Success",
 		zap.Int("missing_receipt_fired", summary.MissingReceiptFired),
 		zap.Int("seasonal_fired", summary.SeasonalFired),
+		zap.Int("monthly_meter_reading_fired", summary.MonthlyMeterReadingFired),
 	)
 	return summary, nil
 }
@@ -541,6 +553,63 @@ func (uc *usecases) scanBalanceSeasonal(ctx context.Context, summary *ScanSummar
 			return fmt.Errorf("fire balance_seasonal: %w", err)
 		}
 		summary.SeasonalFired++
+	}
+	return nil
+}
+
+// scanMonthlyMeterReading fires the monthly_meter_reading alert from
+// the 28th of the month (Europe/Paris) onward if no MeterReading
+// exists for the current YYYY-MM. Recipient: both foyers — water
+// consumption is shared. Per-recipient idempotency via the `:foyerID`
+// suffix on the dedupe key (mirrors balance_seasonal). The `>= 28`
+// guard plus dedupe makes the alert self-healing across cron misses.
+func (uc *usecases) scanMonthlyMeterReading(ctx context.Context, summary *ScanSummary) error {
+	if uc.meters == nil {
+		return nil
+	}
+	now := uc.now().In(uc.location)
+	if now.Day() < 28 {
+		return nil
+	}
+	period := fmt.Sprintf("%04d-%02d", now.Year(), int(now.Month()))
+	existing, err := uc.meters.FindByPeriod(ctx, period)
+	if err != nil {
+		return fmt.Errorf("find meter %q: %w", period, err)
+	}
+	if existing != nil {
+		return nil
+	}
+
+	rdc, err := uc.foyers.FindByFloor(ctx, entities.FoyerFloorRDC)
+	if err != nil {
+		return fmt.Errorf("find rdc: %w", err)
+	}
+	premier, err := uc.foyers.FindByFloor(ctx, entities.FoyerFloor1er)
+	if err != nil {
+		return fmt.Errorf("find 1er: %w", err)
+	}
+	if rdc == nil || premier == nil {
+		return fmt.Errorf("%w: both foyers must exist", domainerrors.ErrNotFound)
+	}
+
+	dedupe := entities.DedupeKeyMonthlyMeterReading(period)
+	body := fmt.Sprintf("Aucune lecture de compteur pour %s — pense à relever les sous-compteurs avant la facture.", period)
+	for _, foyerID := range []string{rdc.ID, premier.ID} {
+		_, err := uc.Fire(ctx, FireInput{
+			Kind:             entities.AlertKindMonthlyMeterReading,
+			RecipientFoyerID: foyerID,
+			DedupeKey:        dedupe + ":" + foyerID,
+			Title:            "Lecture des sous-compteurs",
+			Body:             body,
+			DeepLink:         "/meters/new?period=" + period,
+			Payload: map[string]any{
+				"period": period,
+			},
+		})
+		if err != nil {
+			return fmt.Errorf("fire monthly_meter_reading: %w", err)
+		}
+		summary.MonthlyMeterReadingFired++
 	}
 	return nil
 }

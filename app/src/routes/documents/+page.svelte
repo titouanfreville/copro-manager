@@ -6,6 +6,7 @@
 	import Button from '$lib/components/Button.svelte';
 	import Fab from '$lib/components/Fab.svelte';
 	import IconButton from '$lib/components/IconButton.svelte';
+	import PhotoCapture from '$lib/components/PhotoCapture.svelte';
 	import {
 		deleteDocument,
 		getDocumentDownloadUrl,
@@ -680,6 +681,13 @@
 								capture="environment"
 								onchange={onPickFile}
 							/>
+							<div class="capture-row">
+								<PhotoCapture
+									filename="document"
+									onCapture={(f) => (mFile = f)}
+									label="Webcam"
+								/>
+							</div>
 							{#if mFile}
 								<span class="field-hint">{mFile.name} · {formatSize(mFile.size)}</span>
 							{/if}
@@ -1132,6 +1140,11 @@
 		font-size: 0.78rem;
 		color: var(--ink-3);
 		font-style: italic;
+	}
+	.capture-row {
+		display: flex;
+		gap: 0.5rem;
+		margin-top: 0.3rem;
 	}
 	.modal-body input,
 	.modal-body select {

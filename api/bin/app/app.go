@@ -17,10 +17,12 @@ import (
 	documentsadapter "github.com/titouanfreville/copro-manager/api/src/adapters/documents"
 	expensesadapter "github.com/titouanfreville/copro-manager/api/src/adapters/expenses"
 	foyersadapter "github.com/titouanfreville/copro-manager/api/src/adapters/foyers"
+	metersadapter "github.com/titouanfreville/copro-manager/api/src/adapters/meters"
 	pushadapter "github.com/titouanfreville/copro-manager/api/src/adapters/push"
 	settlementsadapter "github.com/titouanfreville/copro-manager/api/src/adapters/settlements"
 	templatesadapter "github.com/titouanfreville/copro-manager/api/src/adapters/templates"
 	usersadapter "github.com/titouanfreville/copro-manager/api/src/adapters/users"
+	visionusageadapter "github.com/titouanfreville/copro-manager/api/src/adapters/visionusage"
 	"github.com/titouanfreville/copro-manager/api/src/core/config"
 	"github.com/titouanfreville/copro-manager/api/src/domain/interfaces"
 	"github.com/titouanfreville/copro-manager/api/src/domain/usecases"
@@ -30,6 +32,7 @@ import (
 	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/expenses"
 	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/foyers"
 	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/home"
+	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/meters"
 	pushuc "github.com/titouanfreville/copro-manager/api/src/domain/usecases/push"
 	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/settlements"
 	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/templates"
@@ -42,6 +45,7 @@ import (
 	"github.com/titouanfreville/copro-manager/api/src/services/otel"
 	pushsvc "github.com/titouanfreville/copro-manager/api/src/services/push"
 	"github.com/titouanfreville/copro-manager/api/src/services/storage"
+	visionsvc "github.com/titouanfreville/copro-manager/api/src/services/vision"
 	"github.com/titouanfreville/copro-manager/api/src/services/zap"
 )
 
@@ -87,6 +91,26 @@ func main() {
 				fx.As(new(interfaces.PushSender)),
 			),
 
+			fx.Annotate(
+				visionusageadapter.NewStore,
+				fx.As(new(interfaces.VisionUsageStore)),
+			),
+			fx.Annotate(
+				func(lc fx.Lifecycle, cfg *config.Config, usage interfaces.VisionUsageStore) (*visionsvc.Client, error) {
+					c, err := visionsvc.NewClient(cfg.Vision, usage)
+					if err != nil {
+						return nil, err
+					}
+					// Register Close on shutdown so the gRPC client + auth
+					// connections aren't leaked between Cloud Run instances.
+					lc.Append(fx.Hook{
+						OnStop: func(_ context.Context) error { return c.Close() },
+					})
+					return c, nil
+				},
+				fx.As(new(interfaces.OCRService)),
+			),
+
 			firebase.NewApp,
 			firebase.NewAuthClient,
 			firebase.NewAdminClient,
@@ -102,6 +126,7 @@ func main() {
 			fx.Annotate(documentsadapter.NewStore, fx.As(new(interfaces.DocumentsStore))),
 			fx.Annotate(alertsadapter.NewStore, fx.As(new(interfaces.AlertsStore))),
 			fx.Annotate(pushadapter.NewStore, fx.As(new(interfaces.PushSubscriptionsStore))),
+			fx.Annotate(metersadapter.NewStore, fx.As(new(interfaces.MetersStore))),
 			fx.Annotate(authadapter.NewFirebaseProvisioner, fx.As(new(interfaces.AuthProvisioner))),
 
 			home.New,
@@ -116,11 +141,13 @@ func main() {
 			func(a alerts.Usecases) expenses.AlertsHook { return a },
 			func(a alerts.Usecases) templates.AlertsHook { return a },
 			func(a alerts.Usecases) settlements.AlertsHook { return a },
+			func(a alerts.Usecases) meters.AlertsHook { return a },
 			expenses.New,
 			templates.New,
 			settlements.New,
 			documents.New,
 			pushuc.New,
+			meters.New,
 			usecases.New,
 
 			func(cfg *config.Config, logger *uberzap.Logger, auth firebase.AuthClient) *middlewares.Middlewares {

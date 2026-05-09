@@ -5,6 +5,7 @@
 	import Button from '$lib/components/Button.svelte';
 	import Fab from '$lib/components/Fab.svelte';
 	import IconButton from '$lib/components/IconButton.svelte';
+	import PhotoCapture from '$lib/components/PhotoCapture.svelte';
 	import { computeBalance } from '$lib/balance';
 	import { formatDate } from '$lib/format';
 	import {
@@ -25,10 +26,12 @@
 		subscribeCategories,
 		subscribeExpenses,
 		subscribeFoyers,
+		subscribeMeters,
 		subscribeSettlements,
 		subscribeTemplates,
 		type ExpenseAttachment
 	} from '$lib/live';
+	import { computeDeltas, computeWaterShare } from '$lib/meters';
 	import { createCategory } from '$lib/categories';
 	import {
 		createSettlement,
@@ -43,6 +46,7 @@
 		Expense,
 		ExpenseTemplate,
 		Foyer,
+		MeterReading,
 		Settlement
 	} from '$lib/api';
 
@@ -54,6 +58,7 @@
 	let expenses = $state<Expense[]>([]);
 	let templates = $state<ExpenseTemplate[]>([]);
 	let settlements = $state<Settlement[]>([]);
+	let meters = $state<MeterReading[]>([]);
 	let liveError = $state('');
 	let foyersReady = $state(false);
 	let categoriesReady = $state(false);
@@ -79,6 +84,10 @@
 	const BP_TOTAL = 10000;
 	let shareRDCEuros = $state('');
 	let share1erEuros = $state('');
+	// `water_3_meters` mode pins the bill to a specific MeterReading period
+	// (YYYY-MM); the dropdown lists periods that have BOTH a current AND a
+	// prior reading recorded — only those let the formula compute deltas.
+	let meterReadingPeriod = $state('');
 	let note = $state('');
 	let creating = $state(false);
 	let createError = $state('');
@@ -352,10 +361,7 @@
 		}
 	}
 
-	function onPickFiles(e: Event) {
-		const input = e.currentTarget as HTMLInputElement;
-		const picked = input.files;
-		if (!picked || picked.length === 0) return;
+	function addFilesToQueue(files: File[]) {
 		uploadError = '';
 		const accepted = ATTACHMENT_ACCEPT.split(',');
 		const next: File[] = pendingFiles.slice();
@@ -364,7 +370,7 @@
 		// pendings.
 		const existing = editingId ? (attachmentsByExpense[editingId]?.length ?? 0) : 0;
 		const errors: string[] = [];
-		for (const file of Array.from(picked)) {
+		for (const file of files) {
 			if (next.length + existing >= ATTACHMENT_MAX_PER_EXPENSE) {
 				errors.push(`Maximum ${ATTACHMENT_MAX_PER_EXPENSE} pièces jointes par dépense.`);
 				break;
@@ -388,6 +394,13 @@
 		// the user's pick was partially rejected.
 		if (errors.length) uploadError = errors.join(' ');
 		pendingFiles = next;
+	}
+
+	function onPickFiles(e: Event) {
+		const input = e.currentTarget as HTMLInputElement;
+		const picked = input.files;
+		if (!picked || picked.length === 0) return;
+		addFilesToQueue(Array.from(picked));
 		// Reset the input so picking the same file twice fires the change event.
 		input.value = '';
 	}
@@ -499,6 +512,9 @@
 			}, onErr),
 			subscribeSettlements((rows) => {
 				settlements = rows;
+			}, onErr),
+			subscribeMeters((rows) => {
+				meters = rows;
 			}, onErr)
 		];
 
@@ -619,11 +635,63 @@
 	}
 
 	function modeLabel(m: DistributionMode): string {
-		return m === 'equal' ? 'Égalité' : m === 'tantiemes' ? 'Tantièmes' : 'Personnalisé';
+		switch (m) {
+			case 'equal':
+				return 'Égalité';
+			case 'tantiemes':
+				return 'Tantièmes';
+			case 'water_3_meters':
+				return 'Eau (3 sous-compteurs)';
+			default:
+				return 'Personnalisé';
+		}
 	}
 	function modeGlyph(m: DistributionMode): string {
-		return m === 'equal' ? '½' : m === 'tantiemes' ? '‰' : '✱';
+		switch (m) {
+			case 'equal':
+				return '½';
+			case 'tantiemes':
+				return '‰';
+			case 'water_3_meters':
+				return '⌬';
+			default:
+				return '✱';
+		}
 	}
+
+	// ─── water_3_meters helpers ─────────────────────────────────────
+	// `meters` arrives sorted desc by Period; expose periods that have
+	// the IMMEDIATELY-PRECEDING calendar month available. A non-adjacent
+	// pair would silently absorb several months of consumption into a
+	// single bill — refuse it client-side so the user records the
+	// missing month first.
+	function priorMonth(period: string): string {
+		const [yy, mm] = period.split('-').map(Number);
+		if (!yy || !mm) return '';
+		const prevY = mm === 1 ? yy - 1 : yy;
+		const prevM = mm === 1 ? 12 : mm - 1;
+		return `${String(prevY).padStart(4, '0')}-${String(prevM).padStart(2, '0')}`;
+	}
+	let eligibleMeterPeriods = $derived.by(() => {
+		const out: { period: string; current: MeterReading; prior: MeterReading }[] = [];
+		for (let i = 0; i < meters.length - 1; i++) {
+			const cur = meters[i];
+			const prev = meters[i + 1];
+			if (prev.period !== priorMonth(cur.period)) continue;
+			out.push({ period: cur.period, current: cur, prior: prev });
+		}
+		return out;
+	});
+
+	let selectedMeterPair = $derived(
+		eligibleMeterPeriods.find((p) => p.period === meterReadingPeriod) ?? null
+	);
+	let waterDeltas = $derived(
+		selectedMeterPair ? computeDeltas(selectedMeterPair.current, selectedMeterPair.prior) : null
+	);
+	let waterShares = $derived(
+		computeWaterShare(eurosToCents(amountEuros) || 0, waterDeltas)
+	);
 	function foyerLabel(f: Foyer): string {
 		return f.floor === 'rdc' ? 'RDC' : '1ᵉʳ';
 	}
@@ -835,6 +903,7 @@
 		rdcPercentBp = BP_TOTAL / 2;
 		shareRDCEuros = '';
 		share1erEuros = '';
+		meterReadingPeriod = '';
 		note = '';
 		createError = '';
 		pendingFiles = [];
@@ -926,6 +995,7 @@
 		// Default to "exact" when editing — the operator is most often
 		// adjusting literal amounts on imported rows.
 		customSubMode = 'exact';
+		meterReadingPeriod = exp.meter_reading_period ?? '';
 		note = exp.note ?? '';
 		createError = '';
 		modalOpen = true;
@@ -1142,8 +1212,25 @@
 			settled: settled || undefined,
 			settled_at: settled && settledAt ? settledAt : undefined,
 			note: note.trim() || undefined,
-			template_id: pendingTemplateId ?? undefined
+			template_id: pendingTemplateId ?? undefined,
+			meter_reading_period: mode === 'water_3_meters' ? meterReadingPeriod || undefined : undefined
 		};
+		if (mode === 'water_3_meters') {
+			if (!meterReadingPeriod) {
+				createError = 'Choisis une période de lecture (compteurs).';
+				return;
+			}
+			if (!selectedMeterPair || !waterDeltas) {
+				createError =
+					'Période sélectionnée sans lecture précédente — impossible de calculer les deltas.';
+				return;
+			}
+			if (waterDeltas.totalDetail <= 0) {
+				createError =
+					'Consommation totale nulle entre les deux lectures — bascule en mode manuel.';
+				return;
+			}
+		}
 		if (mode === 'custom') {
 			if (customSubMode === 'percent') {
 				body.share_rdc_cents = Math.round((amountCents * rdcPercentBp) / BP_TOTAL);
@@ -2152,8 +2239,68 @@
 								<span class="mt-name">Manuel</span>
 								<span class="mt-sub">parts libres</span>
 							</button>
+							<button
+								type="button"
+								role="tab"
+								class:active={mode === 'water_3_meters'}
+								onclick={() => (mode = 'water_3_meters')}
+							>
+								<span class="mt-glyph">⌬</span>
+								<span class="mt-name">Eau</span>
+								<span class="mt-sub">3 sous-compteurs</span>
+							</button>
 						</div>
 					</fieldset>
+
+					{#if mode === 'water_3_meters'}
+						<div class="water-pane">
+							{#if eligibleMeterPeriods.length === 0}
+								<p class="water-empty">
+									Aucune période exploitable. La répartition « eau (3 sous-compteurs) »
+									exige deux lectures consécutives —
+									<a class="link" href="/meters/new">capture une lecture</a>
+									puis reviens ici.
+								</p>
+							{:else}
+								<label class="field">
+									<span class="lbl">Période de lecture</span>
+									<select bind:value={meterReadingPeriod} required>
+										<option value="">— choisir —</option>
+										{#each eligibleMeterPeriods as p (p.period)}
+											<option value={p.period}>
+												{p.period} (vs. {p.prior.period})
+											</option>
+										{/each}
+									</select>
+								</label>
+
+								{#if waterDeltas && waterShares}
+									<div class="water-breakdown">
+										<div class="wb-row">
+											<span class="wb-label">Δ commun</span>
+											<span>{waterDeltas.dCommon.toFixed(3)} m³</span>
+										</div>
+										<div class="wb-row">
+											<span class="wb-label">Δ RDC</span>
+											<span>{waterDeltas.dRDC.toFixed(3)} m³</span>
+										</div>
+										<div class="wb-row">
+											<span class="wb-label">Δ 1ᵉʳ</span>
+											<span>{waterDeltas.d1er.toFixed(3)} m³</span>
+										</div>
+										<div class="wb-row strong">
+											<span class="wb-label">Part RDC</span>
+											<span>{(waterShares.shareRDCCents / 100).toFixed(2)} €</span>
+										</div>
+										<div class="wb-row strong">
+											<span class="wb-label">Part 1ᵉʳ</span>
+											<span>{(waterShares.share1erCents / 100).toFixed(2)} €</span>
+										</div>
+									</div>
+								{/if}
+							{/if}
+						</div>
+					{/if}
 
 					{#if mode === 'custom'}
 						<div class="custom-pane">
@@ -2342,6 +2489,14 @@
 								onchange={onPickFiles}
 								disabled={creating}
 							/>
+							<div class="capture-row">
+								<PhotoCapture
+									filename="recu"
+									disabled={creating}
+									onCapture={(f) => addFilesToQueue([f])}
+									label="Webcam"
+								/>
+							</div>
 							<span class="attach-hint">
 								Ajouter une photo de reçu ou un PDF — 10 Mo max, jusqu'à {ATTACHMENT_MAX_PER_EXPENSE} fichiers.
 							</span>
@@ -3268,6 +3423,10 @@
 		flex-direction: column;
 		gap: 0.35rem;
 	}
+	.attach-picker .capture-row {
+		display: flex;
+		gap: 0.5rem;
+	}
 	.attach-picker input[type='file'] {
 		font-family: var(--ui);
 		font-size: 0.85rem;
@@ -4005,12 +4164,53 @@
 	}
 	.mode-tabs {
 		display: grid;
-		grid-template-columns: repeat(3, 1fr);
+		grid-template-columns: repeat(4, 1fr);
 		gap: 0.4rem;
 		background: var(--bg);
 		border: 1px solid var(--hairline);
 		border-radius: 0.7rem;
 		padding: 0.3rem;
+	}
+	.water-pane {
+		display: flex;
+		flex-direction: column;
+		gap: 0.7rem;
+	}
+	.water-empty {
+		color: var(--ink-3);
+		font-size: 0.88rem;
+		margin: 0;
+		padding: 0.7rem 0.85rem;
+		background: var(--bg);
+		border: 1px dashed var(--hairline);
+		border-radius: 0.6rem;
+	}
+	.water-breakdown {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+		background: var(--bg);
+		border: 1px solid var(--hairline);
+		border-radius: 0.6rem;
+		padding: 0.6rem 0.8rem;
+	}
+	.wb-row {
+		display: flex;
+		justify-content: space-between;
+		font-size: 0.85rem;
+		color: var(--ink-2);
+	}
+	.wb-row.strong {
+		font-family: var(--display);
+		color: var(--ink);
+		font-size: 0.95rem;
+	}
+	.wb-label {
+		font-size: 0.7rem;
+		letter-spacing: 0.14em;
+		text-transform: uppercase;
+		color: var(--ink-4);
+		font-weight: 600;
 	}
 	.mode-tabs button {
 		display: flex;

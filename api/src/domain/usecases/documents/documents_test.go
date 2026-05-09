@@ -140,6 +140,13 @@ func (m *mockStorage) Delete(ctx context.Context, objectName string) error {
 func (m *mockStorage) DeletePrefix(ctx context.Context, prefix string) error {
 	return m.Called(ctx, prefix).Error(0)
 }
+func (m *mockStorage) Read(ctx context.Context, objectName string) ([]byte, error) {
+	args := m.Called(ctx, objectName)
+	if v := args.Get(0); v != nil {
+		return v.([]byte), args.Error(1)
+	}
+	return nil, args.Error(1)
+}
 
 // ─── Helpers ────────────────────────────────────────────────────────
 

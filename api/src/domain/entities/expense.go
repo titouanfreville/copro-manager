@@ -14,11 +14,24 @@ const (
 	// DistributionModeCustom takes user-provided per-foyer amounts that must
 	// sum exactly to the total.
 	DistributionModeCustom DistributionMode = "custom"
+	// DistributionModeWater3Meters splits a water bill using the three
+	// detail submeter deltas of the chosen MeterReadingPeriod against its
+	// immediate prior period:
+	//   share_rdc = (Δrdc + Δcommon/2) / total × amount
+	//   share_1er = amount − share_rdc
+	// The expense carries `MeterReadingPeriod`; the usecase pulls both the
+	// current and the prior reading at compute time.
+	DistributionModeWater3Meters DistributionMode = "water_3_meters"
 )
 
 // AllDistributionModes lists every supported mode in display order.
 func AllDistributionModes() []DistributionMode {
-	return []DistributionMode{DistributionModeEqual, DistributionModeTantiemes, DistributionModeCustom}
+	return []DistributionMode{
+		DistributionModeEqual,
+		DistributionModeTantiemes,
+		DistributionModeCustom,
+		DistributionModeWater3Meters,
+	}
 }
 
 // IsKnownDistributionMode reports whether the value is one of the modes
@@ -82,9 +95,14 @@ type Expense struct {
 	// allow AmountCents == 0, and surface a "Montant à compléter" CTA.
 	// Cleared automatically when the user submits an Update with a valid
 	// (>0) amount.
-	AmountPending bool      `json:"amount_pending,omitempty"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	AmountPending bool `json:"amount_pending,omitempty"`
+	// MeterReadingPeriod (YYYY-MM) is set on `water_3_meters` expenses to
+	// pin the bill to a specific reading period; computeShares uses this
+	// to load the current + prior MeterReading and run the formula. Empty
+	// for every other distribution mode.
+	MeterReadingPeriod string    `json:"meter_reading_period,omitempty"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 	// Attachments live in the subcollection `expenses/{id}/attachments/{aid}`.
 	// They are loaded on demand via the AttachmentsStore (not embedded on the
 	// expense doc) so the cap stays atomic and the ledger row stays compact.

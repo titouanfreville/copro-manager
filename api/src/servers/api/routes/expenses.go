@@ -14,21 +14,22 @@ import (
 )
 
 type createExpenseRequest struct {
-	Name             string `json:"name"`
-	AmountCents      int    `json:"amount_cents"`
-	Currency         string `json:"currency"`
-	Date             string `json:"date"`
-	PaymentDate      string `json:"payment_date,omitempty"`
-	PayerFoyerID     string `json:"payer_foyer_id"`
-	CategoryID       string `json:"category_id"`
-	DistributionMode string `json:"distribution_mode"`
-	ShareRDCCents    int    `json:"share_rdc_cents,omitempty"`
-	Share1erCents    int    `json:"share_1er_cents,omitempty"`
-	Settled          bool   `json:"settled,omitempty"`
-	SettledAt        string `json:"settled_at,omitempty"`
-	Note             string `json:"note,omitempty"`
-	TemplateID       string `json:"template_id,omitempty"`
-	AmountPending    bool   `json:"amount_pending,omitempty"`
+	Name               string `json:"name"`
+	AmountCents        int    `json:"amount_cents"`
+	Currency           string `json:"currency"`
+	Date               string `json:"date"`
+	PaymentDate        string `json:"payment_date,omitempty"`
+	PayerFoyerID       string `json:"payer_foyer_id"`
+	CategoryID         string `json:"category_id"`
+	DistributionMode   string `json:"distribution_mode"`
+	ShareRDCCents      int    `json:"share_rdc_cents,omitempty"`
+	Share1erCents      int    `json:"share_1er_cents,omitempty"`
+	Settled            bool   `json:"settled,omitempty"`
+	SettledAt          string `json:"settled_at,omitempty"`
+	Note               string `json:"note,omitempty"`
+	TemplateID         string `json:"template_id,omitempty"`
+	AmountPending      bool   `json:"amount_pending,omitempty"`
+	MeterReadingPeriod string `json:"meter_reading_period,omitempty"`
 }
 
 // CreateExpense handles POST /expenses.
@@ -58,22 +59,23 @@ func (e *Endpoints) CreateExpense(w http.ResponseWriter, r *http.Request) {
 	actorUID, _ := r.Context().Value(shared.UserID).(string)
 
 	exp, err := e.usecases.Expenses.Create(r.Context(), expenses.CreateInput{
-		ActorUserID:      actorUID,
-		Name:             req.Name,
-		AmountCents:      req.AmountCents,
-		Currency:         req.Currency,
-		Date:             date,
-		PaymentDate:      paymentDate,
-		PayerFoyerID:     req.PayerFoyerID,
-		CategoryID:       req.CategoryID,
-		DistributionMode: entities.DistributionMode(req.DistributionMode),
-		ShareRDCCents:    req.ShareRDCCents,
-		Share1erCents:    req.Share1erCents,
-		Settled:          req.Settled,
-		SettledAt:        settledAt,
-		Note:             req.Note,
-		TemplateID:       req.TemplateID,
-		AmountPending:    req.AmountPending,
+		ActorUserID:        actorUID,
+		Name:               req.Name,
+		AmountCents:        req.AmountCents,
+		Currency:           req.Currency,
+		Date:               date,
+		PaymentDate:        paymentDate,
+		PayerFoyerID:       req.PayerFoyerID,
+		CategoryID:         req.CategoryID,
+		DistributionMode:   entities.DistributionMode(req.DistributionMode),
+		ShareRDCCents:      req.ShareRDCCents,
+		Share1erCents:      req.Share1erCents,
+		Settled:            req.Settled,
+		SettledAt:          settledAt,
+		Note:               req.Note,
+		TemplateID:         req.TemplateID,
+		AmountPending:      req.AmountPending,
+		MeterReadingPeriod: req.MeterReadingPeriod,
 	})
 	if err != nil {
 		status, body := routeerrors.ManageErrors(err)
@@ -117,22 +119,23 @@ func (e *Endpoints) UpdateExpense(w http.ResponseWriter, r *http.Request) {
 	actorUID, _ := r.Context().Value(shared.UserID).(string)
 
 	exp, err := e.usecases.Expenses.Update(r.Context(), id, expenses.CreateInput{
-		ActorUserID:      actorUID,
-		Name:             req.Name,
-		AmountCents:      req.AmountCents,
-		Currency:         req.Currency,
-		Date:             date,
-		PaymentDate:      paymentDate,
-		PayerFoyerID:     req.PayerFoyerID,
-		CategoryID:       req.CategoryID,
-		DistributionMode: entities.DistributionMode(req.DistributionMode),
-		ShareRDCCents:    req.ShareRDCCents,
-		Share1erCents:    req.Share1erCents,
-		Settled:          req.Settled,
-		SettledAt:        settledAt,
-		Note:             req.Note,
-		TemplateID:       req.TemplateID,
-		AmountPending:    req.AmountPending,
+		ActorUserID:        actorUID,
+		Name:               req.Name,
+		AmountCents:        req.AmountCents,
+		Currency:           req.Currency,
+		Date:               date,
+		PaymentDate:        paymentDate,
+		PayerFoyerID:       req.PayerFoyerID,
+		CategoryID:         req.CategoryID,
+		DistributionMode:   entities.DistributionMode(req.DistributionMode),
+		ShareRDCCents:      req.ShareRDCCents,
+		Share1erCents:      req.Share1erCents,
+		Settled:            req.Settled,
+		SettledAt:          settledAt,
+		Note:               req.Note,
+		TemplateID:         req.TemplateID,
+		AmountPending:      req.AmountPending,
+		MeterReadingPeriod: req.MeterReadingPeriod,
 	})
 	if err != nil {
 		status, body := routeerrors.ManageErrors(err)

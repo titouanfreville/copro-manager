@@ -25,9 +25,9 @@
 		return [
 			{ href: '/expenses', label: 'Dépenses' },
 			{ href: '/templates', label: 'Modèles' },
+			{ href: '/meters', label: 'Compteurs' },
 			{ href: '/documents', label: 'Documents' },
-			{ href: '/categories', label: 'Catégories' },
-			{ href: '/alerts', label: 'Alertes' }
+			{ href: '/categories', label: 'Catégories' }
 		];
 	}
 

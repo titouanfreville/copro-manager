@@ -37,4 +37,9 @@ type StorageService interface {
 	// DeletePrefix removes every object under the given prefix. Used by
 	// the expense-delete cascade.
 	DeletePrefix(ctx context.Context, prefix string) error
+
+	// Read returns the full object bytes. Used by the OCR path to fetch
+	// a meter photo for color-sampling + Vision analysis. Bounded files
+	// only — meter photos cap at MeterReadingMaxPhotoBytes (10 MB).
+	Read(ctx context.Context, objectName string) ([]byte, error)
 }

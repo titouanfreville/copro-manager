@@ -24,6 +24,10 @@ func ManageErrors(err error) (int, ServErrors) {
 		return http.StatusConflict, NewServErrors("ALREADY_EXISTS", err.Error())
 	case errors.Is(err, domainerrors.ErrNotImplemented):
 		return http.StatusNotImplemented, NewServErrors("NOT_IMPLEMENTED", "not implemented")
+	case errors.Is(err, domainerrors.ErrFeatureDisabled):
+		return http.StatusServiceUnavailable, NewServErrors("FEATURE_DISABLED", "feature désactivée")
+	case errors.Is(err, domainerrors.ErrFeatureCapped):
+		return http.StatusTooManyRequests, NewServErrors("FEATURE_CAPPED", "quota mensuel atteint, réessaie le mois prochain")
 	default:
 		return http.StatusInternalServerError, NewServErrors("INTERNAL_ERROR", "internal server error")
 	}

@@ -21,6 +21,7 @@ locals {
     "serviceusage.googleapis.com",
     "storage.googleapis.com",
     "sts.googleapis.com",
+    "vision.googleapis.com",
   ]
 }
 

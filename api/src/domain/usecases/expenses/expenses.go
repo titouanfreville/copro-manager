@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"strings"
 	"time"
 
@@ -69,6 +70,10 @@ type CreateInput struct {
 	// are excluded from the running balance. The Update path clears the
 	// flag automatically when a valid amount is provided.
 	AmountPending bool
+	// MeterReadingPeriod (YYYY-MM) is required when DistributionMode is
+	// `water_3_meters`: it pins the bill to the meter reading the
+	// formula should consume. Empty for every other mode.
+	MeterReadingPeriod string
 }
 
 // UpsertResult tells the caller whether a brand-new doc was written or an
@@ -135,6 +140,7 @@ type usecases struct {
 	categories  interfaces.CategoriesStore
 	storage     interfaces.StorageService
 	settlements interfaces.SettlementsStore
+	meters      interfaces.MetersStore
 	alerts      AlertsHook
 	now         func() time.Time
 }
@@ -150,6 +156,7 @@ func New(
 	categories interfaces.CategoriesStore,
 	storage interfaces.StorageService,
 	settlements interfaces.SettlementsStore,
+	meters interfaces.MetersStore,
 	alerts AlertsHook,
 ) Usecases {
 	return &usecases{
@@ -161,6 +168,7 @@ func New(
 		categories:  categories,
 		storage:     storage,
 		settlements: settlements,
+		meters:      meters,
 		alerts:      alerts,
 		now:         time.Now,
 	}
@@ -216,7 +224,7 @@ func (uc *usecases) Create(ctx context.Context, in CreateInput) (*entities.Expen
 		return nil, fmt.Errorf("copro lookup: %w", err)
 	}
 
-	shareRDC, share1er, err := computeSharesOrPending(in, rdc, premier, copro)
+	shareRDC, share1er, err := uc.computeSharesOrPending(ctx, in, rdc, premier, copro)
 	if err != nil {
 		log.Warn("share computation failed", zap.Error(err))
 		return nil, err
@@ -229,25 +237,26 @@ func (uc *usecases) Create(ctx context.Context, in CreateInput) (*entities.Expen
 
 	now := uc.now()
 	exp := entities.Expense{
-		ID:               uuid.NewString(),
-		CoproID:          copro.ID,
-		Name:             strings.TrimSpace(in.Name),
-		AmountCents:      in.AmountCents,
-		Currency:         currency,
-		Date:             in.Date,
-		PaymentDate:      in.PaymentDate,
-		PayerFoyerID:     in.PayerFoyerID,
-		CategoryID:       in.CategoryID,
-		DistributionMode: in.DistributionMode,
-		ShareRDCCents:    shareRDC,
-		Share1erCents:    share1er,
-		Settled:          in.Settled,
-		SettledAt:        normalizeSettledAt(in.Settled, in.SettledAt),
-		Note:             in.Note,
-		TemplateID:       in.TemplateID,
-		AmountPending:    in.AmountPending,
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		ID:                 uuid.NewString(),
+		CoproID:            copro.ID,
+		Name:               strings.TrimSpace(in.Name),
+		AmountCents:        in.AmountCents,
+		Currency:           currency,
+		Date:               in.Date,
+		PaymentDate:        in.PaymentDate,
+		PayerFoyerID:       in.PayerFoyerID,
+		CategoryID:         in.CategoryID,
+		DistributionMode:   in.DistributionMode,
+		ShareRDCCents:      shareRDC,
+		Share1erCents:      share1er,
+		Settled:            in.Settled,
+		SettledAt:          normalizeSettledAt(in.Settled, in.SettledAt),
+		Note:               in.Note,
+		TemplateID:         in.TemplateID,
+		AmountPending:      in.AmountPending,
+		MeterReadingPeriod: normalizeMeterPeriod(in.DistributionMode, in.MeterReadingPeriod),
+		CreatedAt:          now,
+		UpdatedAt:          now,
 	}
 
 	if err := uc.expenses.Create(ctx, exp); err != nil {
@@ -371,7 +380,7 @@ func (uc *usecases) Update(ctx context.Context, id string, in CreateInput) (*ent
 		return nil, fmt.Errorf("copro lookup: %w", err)
 	}
 
-	shareRDC, share1er, err := computeSharesOrPending(in, rdc, premier, copro)
+	shareRDC, share1er, err := uc.computeSharesOrPending(ctx, in, rdc, premier, copro)
 	if err != nil {
 		return nil, err
 	}
@@ -398,15 +407,17 @@ func (uc *usecases) Update(ctx context.Context, id string, in CreateInput) (*ent
 	// silently wipe the audit trail.
 	existing.SettledAt = mergeSettledAt(in.Settled, in.SettledAt, existing.SettledAt)
 	existing.Note = in.Note
+	existing.MeterReadingPeriod = normalizeMeterPeriod(in.DistributionMode, in.MeterReadingPeriod)
 	// TemplateID is preserved when present — Update doesn't typically
 	// clear lineage. Only overwrite when the input carries a value.
 	if in.TemplateID != "" {
 		existing.TemplateID = in.TemplateID
 	}
+	// Capture the prior pending-state BEFORE mutating `existing`, otherwise
+	// `wasPending` is always false (both operands would be `in.AmountPending`).
+	wasPending := existing.AmountPending && !in.AmountPending
 	existing.AmountPending = in.AmountPending
 	existing.UpdatedAt = now
-
-	wasPending := existing.AmountPending && !in.AmountPending
 	if err := uc.expenses.Update(ctx, *existing); err != nil {
 		log.Error("update failed", zap.Error(err))
 		return nil, fmt.Errorf("update expense: %w", err)
@@ -550,7 +561,7 @@ func (uc *usecases) Upsert(ctx context.Context, in CreateInput) (*UpsertResult, 
 		return nil, fmt.Errorf("copro lookup: %w", err)
 	}
 
-	shareRDC, share1er, err := computeShares(in, rdc, premier, copro)
+	shareRDC, share1er, err := uc.computeSharesOrPending(ctx, in, rdc, premier, copro)
 	if err != nil {
 		return nil, err
 	}
@@ -584,6 +595,7 @@ func (uc *usecases) Upsert(ctx context.Context, in CreateInput) (*UpsertResult, 
 		existing.Settled = in.Settled
 		existing.SettledAt = normalizeSettledAt(in.Settled, in.SettledAt)
 		existing.Note = in.Note
+		existing.MeterReadingPeriod = normalizeMeterPeriod(in.DistributionMode, in.MeterReadingPeriod)
 		existing.UpdatedAt = now
 
 		if err := uc.expenses.Update(ctx, *existing); err != nil {
@@ -595,23 +607,24 @@ func (uc *usecases) Upsert(ctx context.Context, in CreateInput) (*UpsertResult, 
 	}
 
 	exp := entities.Expense{
-		ID:               uuid.NewString(),
-		CoproID:          copro.ID,
-		Name:             name,
-		AmountCents:      in.AmountCents,
-		Currency:         currency,
-		Date:             in.Date,
-		PaymentDate:      in.PaymentDate,
-		PayerFoyerID:     in.PayerFoyerID,
-		CategoryID:       in.CategoryID,
-		DistributionMode: in.DistributionMode,
-		ShareRDCCents:    shareRDC,
-		Share1erCents:    share1er,
-		Settled:          in.Settled,
-		SettledAt:        normalizeSettledAt(in.Settled, in.SettledAt),
-		Note:             in.Note,
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		ID:                 uuid.NewString(),
+		CoproID:            copro.ID,
+		Name:               name,
+		AmountCents:        in.AmountCents,
+		Currency:           currency,
+		Date:               in.Date,
+		PaymentDate:        in.PaymentDate,
+		PayerFoyerID:       in.PayerFoyerID,
+		CategoryID:         in.CategoryID,
+		DistributionMode:   in.DistributionMode,
+		ShareRDCCents:      shareRDC,
+		Share1erCents:      share1er,
+		Settled:            in.Settled,
+		SettledAt:          normalizeSettledAt(in.Settled, in.SettledAt),
+		Note:               in.Note,
+		MeterReadingPeriod: normalizeMeterPeriod(in.DistributionMode, in.MeterReadingPeriod),
+		CreatedAt:          now,
+		UpdatedAt:          now,
 	}
 	if err := uc.expenses.Create(ctx, exp); err != nil {
 		log.Error("create failed", zap.Error(err))
@@ -655,12 +668,17 @@ func (uc *usecases) loadFoyers(ctx context.Context) (*entities.Foyer, *entities.
 }
 
 // computeShares applies the chosen distribution mode and returns the
-// (RDC, 1er) cents pair. The invariant ShareRDC + Share1er == Amount is
-// enforced for every mode (rounding remainder routes to the payer).
+// (RDC, 1er) cents pair for the modes that can run synchronously without
+// any extra Firestore lookup. The invariant ShareRDC + Share1er ==
+// Amount is enforced for every mode (rounding remainder routes to the
+// payer).
 //
 // When TrustExplicitShares is set, the supplied shares are taken verbatim
 // regardless of mode — the historical preservation path used by the CSV
-// import.
+// import. Without that flag the `water_3_meters` mode is rejected here:
+// it requires ctx + the meters store, so callers must use the
+// computeSharesOrPending method (which dispatches) instead of this
+// function directly.
 func computeShares(in CreateInput, rdc, premier *entities.Foyer, copro *entities.Copro) (int, int, error) {
 	if in.TrustExplicitShares {
 		if in.ShareRDCCents+in.Share1erCents != in.AmountCents {
@@ -724,6 +742,16 @@ func computeShares(in CreateInput, rdc, premier *entities.Foyer, copro *entities
 		}
 		return in.ShareRDCCents, in.Share1erCents, nil
 
+	case entities.DistributionModeWater3Meters:
+		// Reachable only via the synchronous Upsert path (CSV import) —
+		// when TrustExplicitShares is false, the formula needs ctx + the
+		// meters store and the caller must dispatch via the usecase
+		// method.
+		return 0, 0, entities.ValidationError{
+			Key:     "distribution_mode",
+			Message: "water_3_meters: shares must be supplied explicitly when imported (use trust_explicit_shares)",
+		}
+
 	default:
 		return 0, 0, entities.ValidationError{Key: "distribution_mode", Message: "unknown mode"}
 	}
@@ -747,6 +775,14 @@ func validateInput(in CreateInput) error {
 	if !entities.IsKnownDistributionMode(in.DistributionMode) {
 		details = append(details, entities.Detail{Key: "distribution_mode", Message: "unknown mode"})
 	}
+	if in.DistributionMode == entities.DistributionModeWater3Meters && !in.AmountPending && !in.TrustExplicitShares {
+		// The formula needs the period to be picked up-front; pending and
+		// CSV-imported rows skip the requirement (the latter trusts
+		// explicit shares).
+		if !entities.IsValidMeterPeriod(in.MeterReadingPeriod) {
+			details = append(details, entities.Detail{Key: "meter_reading_period", Message: "required for water_3_meters mode (YYYY-MM)"})
+		}
+	}
 	if strings.TrimSpace(in.PayerFoyerID) == "" {
 		details = append(details, entities.Detail{Key: "payer_foyer_id", Message: "required"})
 	}
@@ -766,13 +802,108 @@ func validateInput(in CreateInput) error {
 	return nil
 }
 
+// normalizeMeterPeriod returns the period only when the mode is
+// `water_3_meters`. Other modes drop the field — keeps the persisted doc
+// clean and avoids surprising readers who switch a row back from
+// water_3_meters to (say) custom and then notice an orphan period.
+func normalizeMeterPeriod(mode entities.DistributionMode, period string) string {
+	if mode != entities.DistributionModeWater3Meters {
+		return ""
+	}
+	return strings.TrimSpace(period)
+}
+
 // computeSharesOrPending wraps computeShares with the pending short-circuit
 // — pending rows always store 0/0 shares regardless of the requested mode.
 // The shares get recomputed the next time Update is called with a real
 // amount and amount_pending=false.
-func computeSharesOrPending(in CreateInput, rdc, premier *entities.Foyer, copro *entities.Copro) (int, int, error) {
+//
+// For `water_3_meters` mode the formula needs the current + prior
+// MeterReading, so the dispatch routes through computeWaterShares which
+// touches the meters store. Other modes stay in the pure computeShares
+// path.
+func (uc *usecases) computeSharesOrPending(ctx context.Context, in CreateInput, rdc, premier *entities.Foyer, copro *entities.Copro) (int, int, error) {
 	if in.AmountPending {
 		return 0, 0, nil
 	}
+	if in.TrustExplicitShares {
+		// CSV-import path: shares preserved verbatim regardless of mode.
+		return computeShares(in, rdc, premier, copro)
+	}
+	if in.DistributionMode == entities.DistributionModeWater3Meters {
+		return uc.computeWaterShares(ctx, in, rdc)
+	}
 	return computeShares(in, rdc, premier, copro)
+}
+
+// computeWaterShares applies the 3-meter water formula:
+//
+//	Δcommon = curr.common - prev.common
+//	Δrdc    = curr.rdc    - prev.rdc
+//	Δ1er    = curr.premier - prev.premier
+//	total   = Δcommon + Δrdc + Δ1er
+//	share_rdc = round((Δrdc + Δcommon/2) / total × amount)
+//	share_1er = amount - share_rdc   (carries the rounding remainder)
+//
+// Returns ValidationError on missing readings, total ≤ 0, or any
+// negative delta (real meters only count up; a roll-back means data
+// entry error or meter replacement and the user must reconcile manually).
+func (uc *usecases) computeWaterShares(ctx context.Context, in CreateInput, rdc *entities.Foyer) (int, int, error) {
+	if uc.meters == nil {
+		return 0, 0, fmt.Errorf("expenses: water_3_meters requires the meters store but none was wired")
+	}
+	if !entities.IsValidMeterPeriod(in.MeterReadingPeriod) {
+		return 0, 0, entities.ValidationError{Key: "meter_reading_period", Message: "must match YYYY-MM"}
+	}
+	curr, err := uc.meters.FindByPeriod(ctx, in.MeterReadingPeriod)
+	if err != nil {
+		return 0, 0, fmt.Errorf("find meter %q: %w", in.MeterReadingPeriod, err)
+	}
+	if curr == nil {
+		return 0, 0, entities.ValidationError{
+			Key:     "meter_reading_period",
+			Message: fmt.Sprintf("aucune lecture pour la période %s — capture-la avant", in.MeterReadingPeriod),
+		}
+	}
+	prev, err := uc.meters.FindPriorPeriod(ctx, in.MeterReadingPeriod)
+	if err != nil {
+		return 0, 0, fmt.Errorf("find prior period: %w", err)
+	}
+	if prev == nil {
+		return 0, 0, entities.ValidationError{
+			Key:     "meter_reading_period",
+			Message: "aucune période antérieure — bascule en mode manuel pour la première facture d'eau",
+		}
+	}
+	dCommon := curr.CommonM3 - prev.CommonM3
+	dRDC := curr.RDCM3 - prev.RDCM3
+	d1er := curr.PremierM3 - prev.PremierM3
+	if dCommon < 0 || dRDC < 0 || d1er < 0 {
+		return 0, 0, entities.ValidationError{
+			Key:     "meter_reading_period",
+			Message: "delta négatif détecté entre deux lectures — corrige la lecture avant de calculer la facture",
+		}
+	}
+	total := dCommon + dRDC + d1er
+	if total <= 0 {
+		return 0, 0, entities.ValidationError{
+			Key:     "meter_reading_period",
+			Message: "consommation totale nulle entre les deux lectures — bascule en mode manuel",
+		}
+	}
+	rdcShare := (dRDC + dCommon/2) / total
+	shareRDCCents := int(math.Round(rdcShare * float64(in.AmountCents)))
+	if shareRDCCents < 0 {
+		shareRDCCents = 0
+	}
+	if shareRDCCents > in.AmountCents {
+		shareRDCCents = in.AmountCents
+	}
+	share1erCents := in.AmountCents - shareRDCCents
+	// rdc parameter currently unused — the share allocation already rolls
+	// the rounding residual into share_1er. Kept on the signature so a
+	// future change can route the residual to the payer (the other
+	// distribution modes do this).
+	_ = rdc
+	return shareRDCCents, share1erCents, nil
 }

@@ -21,6 +21,11 @@ linters:
           disabled: true
     misspell:
       locale: US
+      # French words the misspell tool flags as English typos. Project copy
+      # is in French — these stay as-is.
+      ignore-rules:
+        - compteur
+        - compteurs
 
 run:
   timeout: 5m
