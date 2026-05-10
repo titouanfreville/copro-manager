@@ -6,6 +6,7 @@ data "google_project" "this" {
 
 locals {
   apis = [
+    "aiplatform.googleapis.com",
     "artifactregistry.googleapis.com",
     "cloudbuild.googleapis.com",
     "cloudresourcemanager.googleapis.com",
@@ -21,7 +22,6 @@ locals {
     "serviceusage.googleapis.com",
     "storage.googleapis.com",
     "sts.googleapis.com",
-    "vision.googleapis.com",
   ]
 }
 

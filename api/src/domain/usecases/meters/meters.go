@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"math"
 	"mime"
+	"net/http"
 	"strings"
 	"time"
 
@@ -92,32 +93,30 @@ type Usecases interface {
 	GetPhotoDownloadURL(ctx context.Context, period string, kind entities.MeterPhotoKind, actorUserID string) (string, time.Time, error)
 	DeletePhoto(ctx context.Context, period string, kind entities.MeterPhotoKind, actorUserID string) (*entities.MeterReading, error)
 
-	// SuggestPhotoValues runs OCR against an already-recorded meter
-	// photo and returns the most likely numeric reading(s). For
-	// `global` kind: 1 value (the building's main meter). For
-	// `detail` kind: up to 3 values, sorted top-to-bottom in the
-	// photo so the consumer can map them onto common / RDC / 1er.
-	// Empty slice when OCR is unavailable, no photo exists, or no
-	// number-like text was detected.
+	// SuggestPhotoValues asks Gemini to read an already-recorded meter
+	// photo. For `global` kind: 1 value (the main building dial). For
+	// `detail` kind: 3 values [common, rdc, premier] in fixed order.
+	// Empty slice when the reader is disabled / capped or the photo
+	// isn't legible — the UI falls back to manual entry.
 	SuggestPhotoValues(ctx context.Context, period string, kind entities.MeterPhotoKind, actorUserID string) (*OCRSuggestion, error)
 
-	// SuggestRawPhotoValues runs OCR against inline image bytes —
-	// used by the capture flow's "Auto-lire" button BEFORE any meter
-	// doc or GCS object exists. Stateless: doesn't touch Firestore or
-	// GCS. The same row-clustering heuristic applies as for the
-	// stored-photo variant.
+	// SuggestRawPhotoValues is the stateless companion for the capture
+	// flow's "Auto-lire" button BEFORE the photo is persisted: doesn't
+	// touch Firestore or GCS, just sends the inline bytes to Gemini.
 	SuggestRawPhotoValues(ctx context.Context, kind entities.MeterPhotoKind, image []byte, actorUserID string) (*OCRSuggestion, error)
 }
 
-// OCRSuggestion is the user-facing payload of the OCR endpoint:
-// position-sorted detected values plus their per-block confidence so
-// the UI can de-emphasize iffy reads.
+// OCRSuggestion is the user-facing payload of the OCR endpoint. The
+// per-index confidence slice is preserved as the wire format the
+// frontend already consumes (`res.confidence?.[i]`); Gemini returns a
+// single scalar that we replicate across each value's slot.
 type OCRSuggestion struct {
-	// Values are detected numeric m³ readings sorted by their photo
-	// position (top-to-bottom). For `global` photos: at most 1 value.
-	// For `detail` photos: up to 3 values, indexed by row.
+	// Values per kind: `global` → 1 entry; `detail` → 3 entries
+	// [common, rdc, premier].
 	Values []float64
-	// Confidence ∈ [0, 1] for each value at the matching index.
+	// Confidence ∈ [0, 1] at the matching index. Currently identical
+	// across slots (Gemini's overall confidence in the reading), kept
+	// as a slice so the JSON contract with the SvelteKit UI is stable.
 	Confidence []float64
 }
 
@@ -128,14 +127,14 @@ type usecases struct {
 	foyers   interfaces.FoyersStore
 	copros   interfaces.CoprosStore
 	storage  interfaces.StorageService
-	ocr      interfaces.OCRService
+	reader   interfaces.MeterReader
 	alerts   AlertsHook
 	now      func() time.Time
 }
 
-// New builds a meters usecase. `alerts` and `ocr` may be nil — the
-// resolve hook and OCR endpoint both degrade gracefully (empty
-// suggestions when OCR is missing).
+// New builds a meters usecase. `alerts` and `reader` may be nil — the
+// resolve hook and the OCR endpoint both degrade gracefully (empty
+// suggestion when the reader is missing).
 func New(
 	logger *zap.Logger,
 	meters interfaces.MetersStore,
@@ -143,7 +142,7 @@ func New(
 	foyers interfaces.FoyersStore,
 	copros interfaces.CoprosStore,
 	storage interfaces.StorageService,
-	ocr interfaces.OCRService,
+	reader interfaces.MeterReader,
 	alerts AlertsHook,
 ) Usecases {
 	return &usecases{
@@ -153,7 +152,7 @@ func New(
 		foyers:   foyers,
 		copros:   copros,
 		storage:  storage,
-		ocr:      ocr,
+		reader:   reader,
 		alerts:   alerts,
 		now:      time.Now,
 	}
@@ -624,16 +623,16 @@ func (uc *usecases) DeletePhoto(ctx context.Context, period string, kind entitie
 // physical layout.
 //
 // Heuristic, NOT magic — the user reviews the values before saving.
-// Returns an empty suggestion (not an error) when Vision hiccups or
-// the photo lacks readable digits, so the UI cleanly falls back to
-// manual entry.
+// Returns an empty suggestion (not an error) when the reader is
+// disabled, capped, or hiccups so the UI cleanly falls back to manual
+// entry.
 func (uc *usecases) SuggestPhotoValues(ctx context.Context, period string, kind entities.MeterPhotoKind, actorUserID string) (*OCRSuggestion, error) {
 	log := uc.logger.With(
 		zap.String("method", "SuggestPhotoValues"),
 		zap.String("period", period),
 		zap.String("kind", string(kind)),
 	)
-	if uc.ocr == nil || uc.storage == nil {
+	if uc.reader == nil || uc.storage == nil {
 		return &OCRSuggestion{}, nil
 	}
 	if !entities.IsValidMeterPeriod(period) {
@@ -656,22 +655,21 @@ func (uc *usecases) SuggestPhotoValues(ctx context.Context, period string, kind 
 	if obj == "" {
 		return &OCRSuggestion{}, nil
 	}
-	// Fetch the bytes — used by both OCR (Vision via inline content)
-	// and color sampling for the blue-anchor strategy. ~400 KB per
-	// photo, rarely-called endpoint; the egress cost is negligible.
+	// Fetch the bytes inline — Vertex AI Gemini takes inline images;
+	// ~400 KB per photo, rarely-called endpoint, egress is negligible.
 	imageBytes, err := uc.storage.Read(ctx, obj)
 	if err != nil {
 		log.Warn("photo fetch failed", zap.Error(err))
 		return &OCRSuggestion{}, nil
 	}
-	return uc.analyzeImage(ctx, kind, imageBytes), nil
+	return uc.analyzeImage(ctx, kind, imageBytes, photoMimeType(*existing, kind)), nil
 }
 
 // SuggestRawPhotoValues is the stateless companion to SuggestPhotoValues
 // — for the capture flow where the photo hasn't been saved yet. Same
-// pipeline, applied to raw image bytes.
+// pipeline applied to raw bytes.
 func (uc *usecases) SuggestRawPhotoValues(ctx context.Context, kind entities.MeterPhotoKind, image []byte, actorUserID string) (*OCRSuggestion, error) {
-	if uc.ocr == nil {
+	if uc.reader == nil {
 		return &OCRSuggestion{}, nil
 	}
 	if !entities.IsKnownMeterPhotoKind(kind) {
@@ -689,50 +687,13 @@ func (uc *usecases) SuggestRawPhotoValues(ctx context.Context, kind entities.Met
 	if err := uc.authorize(ctx, actorUserID); err != nil {
 		return nil, err
 	}
-	return uc.analyzeImage(ctx, kind, image), nil
-}
-
-// analyzeImage is the shared OCR pipeline used by both entry points:
-// run Vision on the bytes, score candidates, and assemble the result
-// per-kind. Returns an empty suggestion (never nil) on any failure
-// short of an authorization or input-validation error.
-func (uc *usecases) analyzeImage(ctx context.Context, kind entities.MeterPhotoKind, imageBytes []byte) *OCRSuggestion {
-	log := uc.logger.With(
-		zap.String("method", "analyzeImage"),
-		zap.String("kind", string(kind)),
-		zap.Int("image_bytes", len(imageBytes)),
-	)
-	blocks, err := uc.ocr.DetectTextFromBytes(ctx, imageBytes)
-	if err != nil {
-		log.Warn("ocr failed", zap.Error(err))
-		return &OCRSuggestion{}
+	// Sniff MIME from magic bytes — the route already enforces the
+	// allow-list, so this is just to feed Gemini the correct hint.
+	mimeType := http.DetectContentType(image)
+	if parsed, _, err := mime.ParseMediaType(mimeType); err == nil && parsed != "" {
+		mimeType = parsed
 	}
-	candidates := extractNumberCandidates(blocks)
-	if len(candidates) == 0 {
-		return &OCRSuggestion{}
-	}
-	// Color-aware split: when Vision returns the dial reading as one
-	// fused block (no separator), this samples the bounding box and
-	// detects the red-tinted decimal portion. Falls through silently
-	// when no red region is found, leaving the candidate as the user
-	// would have seen it before — a digit-only integer they correct
-	// manually.
-	candidates = applyColorSplit(candidates, imageBytes)
-	switch kind {
-	case entities.MeterPhotoKindGlobal:
-		best := pickBest(candidates)
-		if best == nil {
-			return &OCRSuggestion{}
-		}
-		return &OCRSuggestion{
-			Values:     []float64{best.value},
-			Confidence: []float64{best.confidence},
-		}
-	case entities.MeterPhotoKindDetail:
-		values, conf := assignDetailValues(candidates, imageBytes)
-		return &OCRSuggestion{Values: values, Confidence: conf}
-	}
-	return &OCRSuggestion{}
+	return uc.analyzeImage(ctx, kind, image, mimeType), nil
 }
 
 func (uc *usecases) authorize(ctx context.Context, actorUserID string) error {

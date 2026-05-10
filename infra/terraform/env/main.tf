@@ -62,7 +62,10 @@ resource "google_project_iam_member" "api_runtime_roles" {
   # project level — it would let a compromised runtime wipe tfstate.
   # Firebase Auth: viewer is enough to verify ID tokens via the Admin SDK
   # (it pulls JWKS without needing admin write).
+  # Vertex AI user: required for Gemini calls (meter OCR; document
+  # classifier and chat assistant land later as additional callers).
   for_each = toset([
+    "roles/aiplatform.user",
     "roles/datastore.user",
     "roles/firebaseauth.viewer",
   ])

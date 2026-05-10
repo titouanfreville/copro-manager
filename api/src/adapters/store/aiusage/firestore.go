@@ -1,7 +1,11 @@
-// Package visionusage persists per-month Cloud Vision call counters
-// in Firestore at stats/vision/{YYYY-MM}. Atomic increments keep the
+// Package aiusage persists per-month Vertex AI / Gemini call counters
+// in Firestore at stats/ai_{YYYY-MM}. Atomic increments keep the
 // counter consistent under concurrent access without a transaction.
-package visionusage
+//
+// One counter for every Gemini-backed feature (meter OCR; document
+// classifier and chat assistant slot in later as their own callers).
+// Single doc per period is sufficient at the 2-foyer scope rule.
+package aiusage
 
 import (
 	"context"
@@ -14,24 +18,22 @@ import (
 
 const (
 	collection = "stats"
-	subPath    = "vision"
+	subPath    = "ai"
 )
 
-// Store is the Firestore-backed VisionUsageStore. The single document
-// per period lives at stats/{YYYY-MM} with a `count` field. Read-side
+// Store is the Firestore-backed AIUsageStore. The single document per
+// period lives at stats/ai_{YYYY-MM} with a `count` field. Read-side
 // returns 0 when the doc is missing (no calls yet for that month).
 type Store struct {
 	client *fs.Client
 }
 
-// NewStore returns a Firestore-backed Vision usage counter.
+// NewStore returns a Firestore-backed AI usage counter.
 func NewStore(client *fs.Client) *Store {
 	return &Store{client: client}
 }
 
 func (s *Store) docRef(period string) *fs.DocumentRef {
-	// Single composite key keeps the layout flat (no extra collection
-	// for stats); fits with the 2-foyer scope rule.
 	return s.client.Collection(collection).Doc(subPath + "_" + period)
 }
 
@@ -43,7 +45,7 @@ func (s *Store) CountForPeriod(ctx context.Context, period string) (int64, error
 		if e, ok := status.FromError(err); ok && e.Code() == codes.NotFound {
 			return 0, nil
 		}
-		return 0, fmt.Errorf("vision usage: get %q: %w", period, err)
+		return 0, fmt.Errorf("ai usage: get %q: %w", period, err)
 	}
 	count, _ := snap.DataAt("count")
 	switch v := count.(type) {
@@ -65,7 +67,7 @@ func (s *Store) IncrementForPeriod(ctx context.Context, period string) error {
 		"period": period,
 	}, fs.MergeAll)
 	if err != nil {
-		return fmt.Errorf("vision usage: increment %q: %w", period, err)
+		return fmt.Errorf("ai usage: increment %q: %w", period, err)
 	}
 	return nil
 }

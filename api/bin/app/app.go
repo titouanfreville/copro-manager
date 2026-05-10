@@ -23,7 +23,7 @@ import (
 	settlementsstore "github.com/titouanfreville/copro-manager/api/src/adapters/store/settlements"
 	templatesstore "github.com/titouanfreville/copro-manager/api/src/adapters/store/templates"
 	usersstore "github.com/titouanfreville/copro-manager/api/src/adapters/store/users"
-	visionusagestore "github.com/titouanfreville/copro-manager/api/src/adapters/store/visionusage"
+	aiusagestore "github.com/titouanfreville/copro-manager/api/src/adapters/store/aiusage"
 	validatorsadapter "github.com/titouanfreville/copro-manager/api/src/adapters/validators"
 	"github.com/titouanfreville/copro-manager/api/src/core/config"
 	"github.com/titouanfreville/copro-manager/api/src/domain/entities"
@@ -49,7 +49,7 @@ import (
 	"github.com/titouanfreville/copro-manager/api/src/services/otel"
 	pushsvc "github.com/titouanfreville/copro-manager/api/src/services/push"
 	"github.com/titouanfreville/copro-manager/api/src/services/storage"
-	visionsvc "github.com/titouanfreville/copro-manager/api/src/services/vision"
+	geminisvc "github.com/titouanfreville/copro-manager/api/src/services/gemini"
 	"github.com/titouanfreville/copro-manager/api/src/services/zap"
 )
 
@@ -96,23 +96,23 @@ func main() {
 			),
 
 			fx.Annotate(
-				visionusagestore.NewStore,
-				fx.As(new(interfaces.VisionUsageStore)),
+				aiusagestore.NewStore,
+				fx.As(new(interfaces.AIUsageStore)),
 			),
 			fx.Annotate(
-				func(lc fx.Lifecycle, cfg *config.Config, usage interfaces.VisionUsageStore) (*visionsvc.Client, error) {
-					c, err := visionsvc.NewClient(cfg.Vision, usage)
+				func(lc fx.Lifecycle, cfg *config.Config, usage interfaces.AIUsageStore) (*geminisvc.Client, error) {
+					c, err := geminisvc.NewClient(cfg.Gemini, usage)
 					if err != nil {
 						return nil, err
 					}
-					// Register Close on shutdown so the gRPC client + auth
-					// connections aren't leaked between Cloud Run instances.
+					// Register Close on shutdown for symmetry with other GCP
+					// service wrappers — currently a no-op on the genai SDK.
 					lc.Append(fx.Hook{
 						OnStop: func(_ context.Context) error { return c.Close() },
 					})
 					return c, nil
 				},
-				fx.As(new(interfaces.OCRService)),
+				fx.As(new(interfaces.MeterReader)),
 			),
 
 			firebase.NewApp,

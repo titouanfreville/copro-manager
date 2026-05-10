@@ -50,14 +50,22 @@ push:
   subject: "mailto:dev@example.invalid"
   ttl_seconds: 86400
 
-vision:
-  # Cloud Vision OCR for meter photos (NFR31). Per-month cap protects
-  # against runaway billing — once exceeded, OCR endpoints respond with
-  # FEATURE_CAPPED until the next month rolls over. Disable entirely by
-  # setting enabled: false. Counter lives in Firestore at
-  # stats/vision/{YYYY-MM} (single doc, atomic increment).
+gemini:
+  # Vertex AI Gemini for meter OCR (and, later, document classifier
+  # plus chat assistant). NFR31: per-month cap protects against runaway
+  # billing — once exceeded, callers respond with FEATURE_CAPPED until
+  # the next month rolls over. Disable entirely with enabled: false.
+  # Counter lives in Firestore at stats/ai_{YYYY-MM} (single doc,
+  # atomic increment, shared by every Gemini-backed feature).
   enabled: true
   monthly_call_cap: 100
+  project_id: copro-494909
+  # europe-west9 (Paris) supports every Gemini model and matches the
+  # rest of the stack — no cross-region egress, NFR15 EU-only ✓.
+  region: europe-west9
+  # gemini-2.5-flash strikes the right accuracy/cost ratio for visual
+  # reasoning at our volume (~€0.04/mo at 50 calls/month).
+  model: gemini-2.5-flash
 
 middlewares:
   allow_bypass: false
