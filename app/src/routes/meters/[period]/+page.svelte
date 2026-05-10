@@ -313,7 +313,6 @@
 								<input
 									type="file"
 									accept="image/*"
-									capture="environment"
 									onchange={(e) => onReplacePhoto('global', e)}
 								/>
 								<span>Remplacer</span>
@@ -377,7 +376,6 @@
 								<input
 									type="file"
 									accept="image/*"
-									capture="environment"
 									onchange={(e) => onReplacePhoto('detail', e)}
 								/>
 								<span>Remplacer</span>

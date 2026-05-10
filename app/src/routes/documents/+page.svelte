@@ -678,7 +678,6 @@
 							<input
 								type="file"
 								accept="image/jpeg,image/png,image/heic,image/heif,application/pdf"
-								capture="environment"
 								onchange={onPickFile}
 							/>
 							<div class="capture-row">

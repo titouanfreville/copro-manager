@@ -2484,7 +2484,6 @@
 							<input
 								type="file"
 								accept={ATTACHMENT_ACCEPT}
-								capture="environment"
 								multiple
 								onchange={onPickFiles}
 								disabled={creating}

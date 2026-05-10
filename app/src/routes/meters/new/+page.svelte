@@ -285,7 +285,6 @@
 						<input
 							type="file"
 							accept="image/*"
-							capture="environment"
 							onchange={(e) => setFile('global', e)}
 						/>
 						<div class="capture-row">
@@ -330,7 +329,6 @@
 						<input
 							type="file"
 							accept="image/*"
-							capture="environment"
 							onchange={(e) => setFile('detail', e)}
 						/>
 						<div class="capture-row">
