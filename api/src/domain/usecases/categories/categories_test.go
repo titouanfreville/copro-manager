@@ -120,6 +120,17 @@ func (m *mockDocumentsStore) CountByCategory(ctx context.Context, categoryID str
 	args := m.Called(ctx, categoryID)
 	return args.Int(0), args.Error(1)
 }
+func (m *mockDocumentsStore) CountByLinkedExpense(ctx context.Context, expenseID string) (int, error) {
+	args := m.Called(ctx, expenseID)
+	return args.Int(0), args.Error(1)
+}
+func (m *mockDocumentsStore) ListByLinkedExpense(ctx context.Context, expenseID string) ([]entities.Document, error) {
+	args := m.Called(ctx, expenseID)
+	if v := args.Get(0); v != nil {
+		return v.([]entities.Document), args.Error(1)
+	}
+	return nil, args.Error(1)
+}
 
 type mockFoyersStore struct{ mock.Mock }
 

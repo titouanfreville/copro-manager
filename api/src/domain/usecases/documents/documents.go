@@ -34,6 +34,12 @@ const (
 	originalFilenameMaxLen = 256
 )
 
+// MaxAttachmentsPerExpense is the per-expense cap when documents are
+// uploaded as expense attachments (LinkedExpenseID set). Mirrors the old
+// AttachmentMaxPerExpense — kept in this domain so the cap travels with
+// the code that enforces it.
+const MaxAttachmentsPerExpense = 10
+
 // RequestUploadInput captures the client's pre-upload declaration.
 type RequestUploadInput struct {
 	ActorUserID      string
@@ -44,6 +50,10 @@ type RequestUploadInput struct {
 	OriginalFilename string
 	ContentType      string
 	SizeBytes        int64
+	// LinkedExpenseID, when set, marks the document as a per-expense
+	// attachment rather than a standalone archive entry. The expense must
+	// exist; the per-expense cap (MaxAttachmentsPerExpense) is enforced.
+	LinkedExpenseID string
 }
 
 // RequestUploadResult is what the route returns to the browser.
@@ -66,6 +76,10 @@ type RecordDocumentInput struct {
 	ContentType      string
 	SizeBytes        int64
 	OriginalFilename string
+	// LinkedExpenseID mirrors the value declared at RequestUpload time so
+	// the persisted record carries the expense link. The cap is re-checked
+	// here defensively (RequestUpload is best-effort).
+	LinkedExpenseID string
 }
 
 // UpdateDocumentInput is for editing the metadata of an existing doc.
@@ -86,6 +100,12 @@ type Usecases interface {
 	Update(ctx context.Context, id string, in UpdateDocumentInput) (*entities.Document, error)
 	Delete(ctx context.Context, id, actorUserID string) error
 	GetDownloadURL(ctx context.Context, id, actorUserID string) (string, time.Time, error)
+	// DeleteByLinkedExpense wipes every document attached to the given
+	// expense — both the Firestore record and the GCS blob. Used by the
+	// expense-delete cascade. Best-effort: a per-doc failure is logged
+	// and the loop continues so a single bad blob doesn't strand the
+	// rest.
+	DeleteByLinkedExpense(ctx context.Context, expenseID string) error
 }
 
 type usecases struct {
@@ -94,6 +114,7 @@ type usecases struct {
 	categories interfaces.CategoriesStore
 	foyers     interfaces.FoyersStore
 	copros     interfaces.CoprosStore
+	expenses   interfaces.ExpensesStore
 	storage    interfaces.StorageService
 	now        func() time.Time
 }
@@ -105,6 +126,7 @@ func New(
 	categories interfaces.CategoriesStore,
 	foyers interfaces.FoyersStore,
 	copros interfaces.CoprosStore,
+	expenses interfaces.ExpensesStore,
 	storage interfaces.StorageService,
 ) Usecases {
 	return &usecases{
@@ -113,6 +135,7 @@ func New(
 		categories: categories,
 		foyers:     foyers,
 		copros:     copros,
+		expenses:   expenses,
 		storage:    storage,
 		now:        time.Now,
 	}
@@ -132,6 +155,7 @@ func (uc *usecases) RequestUploadURL(ctx context.Context, in RequestUploadInput)
 		zap.String("method", "RequestUploadURL"),
 		zap.String("content_type", in.ContentType),
 		zap.Int64("size_bytes", in.SizeBytes),
+		zap.String("linked_expense_id", in.LinkedExpenseID),
 	)
 
 	if uc.storage == nil {
@@ -148,6 +172,11 @@ func (uc *usecases) RequestUploadURL(ctx context.Context, in RequestUploadInput)
 	if err := validateSize(in.SizeBytes); err != nil {
 		return nil, err
 	}
+	exp, err := uc.checkLinkedExpense(ctx, in.LinkedExpenseID)
+	if err != nil {
+		return nil, err
+	}
+	uc.fillLinkedDefaults(&in.Title, &in.CategoryID, exp)
 	if err := uc.validateTitle(in.Title); err != nil {
 		return nil, err
 	}
@@ -198,6 +227,11 @@ func (uc *usecases) Record(ctx context.Context, in RecordDocumentInput) (*entiti
 	if err := validateSize(in.SizeBytes); err != nil {
 		return nil, err
 	}
+	exp, err := uc.checkLinkedExpense(ctx, in.LinkedExpenseID)
+	if err != nil {
+		return nil, err
+	}
+	uc.fillLinkedDefaults(&in.Title, &in.CategoryID, exp)
 	if err := uc.validateTitle(in.Title); err != nil {
 		return nil, err
 	}
@@ -249,6 +283,7 @@ func (uc *usecases) Record(ctx context.Context, in RecordDocumentInput) (*entiti
 		OriginalFilename: truncate(strings.TrimSpace(in.OriginalFilename), originalFilenameMaxLen),
 		UploadedAt:       now,
 		UploadedBy:       in.ActorUserID,
+		LinkedExpenseID:  strings.TrimSpace(in.LinkedExpenseID),
 	}
 	if err := uc.documents.Create(ctx, d); err != nil {
 		log.Error("store create failed", zap.Error(err))
@@ -325,6 +360,37 @@ func (uc *usecases) Delete(ctx context.Context, id, actorUserID string) error {
 	return nil
 }
 
+// DeleteByLinkedExpense wipes every document linked to the given expense.
+// Used by the expense-delete cascade. Bypasses the foyer-membership gate
+// on individual deletes — the caller (the expense usecase) has already
+// authorized the action via its own actor check.
+func (uc *usecases) DeleteByLinkedExpense(ctx context.Context, expenseID string) error {
+	log := uc.logger.With(
+		zap.String("method", "DeleteByLinkedExpense"),
+		zap.String("expense_id", expenseID),
+	)
+	id := strings.TrimSpace(expenseID)
+	if id == "" {
+		return nil
+	}
+	docs, err := uc.documents.ListByLinkedExpense(ctx, id)
+	if err != nil {
+		return fmt.Errorf("list by linked: %w", err)
+	}
+	for _, d := range docs {
+		if uc.storage != nil {
+			if err := uc.storage.Delete(ctx, d.ObjectName); err != nil {
+				log.Warn("storage delete failed (continuing)", zap.String("document_id", d.ID), zap.Error(err))
+			}
+		}
+		if err := uc.documents.Delete(ctx, d.ID); err != nil {
+			log.Warn("metadata delete failed (continuing)", zap.String("document_id", d.ID), zap.Error(err))
+		}
+	}
+	log.Info("Success", zap.Int("documents_deleted", len(docs)))
+	return nil
+}
+
 // GetDownloadURL issues a fresh signed GET URL for an existing document.
 func (uc *usecases) GetDownloadURL(ctx context.Context, id, actorUserID string) (string, time.Time, error) {
 	if uc.storage == nil {
@@ -388,6 +454,57 @@ func (uc *usecases) validateTitle(title string) error {
 		return entities.ValidationError{Key: "title", Message: fmt.Sprintf("max %d chars", titleMaxLen)}
 	}
 	return nil
+}
+
+// checkLinkedExpense verifies that an expense-attach upload references a
+// real expense and that the per-expense cap (10) is not yet reached. The
+// cap pre-check is best-effort — concurrent racers are caught at Record
+// time by re-reading the count. Empty input returns (nil, nil) — the
+// upload is a standalone document.
+func (uc *usecases) checkLinkedExpense(ctx context.Context, expenseID string) (*entities.Expense, error) {
+	id := strings.TrimSpace(expenseID)
+	if id == "" {
+		return nil, nil
+	}
+	if !isSafeID(id) {
+		return nil, entities.ValidationError{Key: "linked_expense_id", Message: "invalid id"}
+	}
+	if uc.expenses == nil {
+		return nil, fmt.Errorf("documents: expenses store not configured")
+	}
+	exp, err := uc.expenses.FindByID(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("find expense: %w", err)
+	}
+	if exp == nil {
+		return nil, fmt.Errorf("%w: expense %q", domainerrors.ErrNotFound, id)
+	}
+	count, err := uc.documents.CountByLinkedExpense(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("count linked: %w", err)
+	}
+	if count >= MaxAttachmentsPerExpense {
+		return nil, entities.ValidationError{
+			Key:     "attachments",
+			Message: fmt.Sprintf("max %d attachments per expense", MaxAttachmentsPerExpense),
+		}
+	}
+	return exp, nil
+}
+
+// fillLinkedDefaults supplies sensible defaults on the per-expense attach
+// path so the route handler can stay thin: title defaults to the original
+// filename or the expense name, category_id is forced to the parent
+// expense's category. Standalone uploads (no linked expense) are
+// unchanged.
+func (uc *usecases) fillLinkedDefaults(title, categoryID *string, exp *entities.Expense) {
+	if exp == nil {
+		return
+	}
+	*categoryID = exp.CategoryID
+	if strings.TrimSpace(*title) == "" {
+		*title = exp.Name
+	}
 }
 
 func (uc *usecases) checkCategory(ctx context.Context, categoryID string) error {

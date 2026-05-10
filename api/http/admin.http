@@ -1,0 +1,43 @@
+### Admin — health check (no auth, smoke test the env)
+GET {{baseUrl}}/uptime
+Accept: application/json
+
+### Admin — list foyers (canonical Copro id appears as foyer.copro_id)
+GET {{baseUrl}}/admin/foyers
+Authorization: AdminKey {{adminKey}}
+Accept: application/json
+
+### Admin — consolidate copros (DRY RUN)
+# Auto-detects the canonical Copro by foyer consensus.
+# Returns per-collection rewrite counts WITHOUT writing.
+POST {{baseUrl}}/admin/copros/consolidate
+Authorization: AdminKey {{adminKey}}
+Content-Type: application/json
+Accept: application/json
+
+{
+  "dry_run": true
+}
+
+### Admin — consolidate copros (COMMIT)
+# Run after the dry-run looks right. Idempotent: re-running on a clean
+# state is a no-op that returns zero rewrites.
+POST {{baseUrl}}/admin/copros/consolidate
+Authorization: AdminKey {{adminKey}}
+Content-Type: application/json
+Accept: application/json
+
+{}
+
+### Admin — consolidate copros (explicit canonical override)
+# Use when foyers reference different copro_ids and the auto-detect
+# refuses. Replace the placeholder with the UUID you want to keep.
+POST {{baseUrl}}/admin/copros/consolidate
+Authorization: AdminKey {{adminKey}}
+Content-Type: application/json
+Accept: application/json
+
+{
+  "canonical_copro_id": "{{canonicalCoproId}}",
+  "dry_run": true
+}

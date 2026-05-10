@@ -18,6 +18,10 @@ func (transport *API) initRoutes(r chi.Router) {
 		adminRouter.Post("/foyers/{id}/members", transport.endpoints.AdminAddFoyerMember)
 		adminRouter.Post("/expenses/import", transport.endpoints.AdminImportExpenses)
 		adminRouter.Post("/users/{id}/reset-password", transport.endpoints.AdminResetUserPassword)
+		// One-shot data fix: rewrites copro_id everywhere to the canonical
+		// Copro and deletes orphan Copro docs created by older versions of
+		// GetOrCreateSingleton.
+		adminRouter.Post("/copros/consolidate", transport.endpoints.AdminConsolidateCopros)
 		// Cloud Scheduler hits this daily. Idempotent.
 		adminRouter.Post("/expense-templates/materialize-recurring", transport.endpoints.AdminMaterializeRecurring)
 		adminRouter.Post("/alerts/scan", transport.endpoints.AdminScanAlerts)

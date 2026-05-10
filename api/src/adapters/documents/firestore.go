@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	fs "cloud.google.com/go/firestore"
@@ -122,6 +123,58 @@ func (s *Store) CountByCategory(ctx context.Context, categoryID string) (int, er
 		count++
 	}
 	return count, nil
+}
+
+// CountByLinkedExpense returns the number of documents pinned to the given
+// expense. Powers the per-expense cap (max 10) on the unified attach flow.
+func (s *Store) CountByLinkedExpense(ctx context.Context, expenseID string) (int, error) {
+	iter := s.client.Collection(collection).
+		Where("linked_expense_id", "==", expenseID).
+		Documents(ctx)
+	defer iter.Stop()
+
+	count := 0
+	for {
+		_, err := iter.Next()
+		if errors.Is(err, iterator.Done) {
+			break
+		}
+		if err != nil {
+			return 0, fmt.Errorf("documents: count by linked expense: %w", err)
+		}
+		count++
+	}
+	return count, nil
+}
+
+// ListByLinkedExpense returns every document linked to the given expense,
+// ordered client-side by uploaded_at asc. Equality on a single field uses
+// Firestore's automatic single-field index — no composite needed.
+func (s *Store) ListByLinkedExpense(ctx context.Context, expenseID string) ([]entities.Document, error) {
+	iter := s.client.Collection(collection).
+		Where("linked_expense_id", "==", expenseID).
+		Documents(ctx)
+	defer iter.Stop()
+
+	var out []entities.Document
+	for {
+		snap, err := iter.Next()
+		if errors.Is(err, iterator.Done) {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("documents: list by linked expense: %w", err)
+		}
+		var doc documentDoc
+		if err := snap.DataTo(&doc); err != nil {
+			return nil, fmt.Errorf("documents: decode: %w", err)
+		}
+		out = append(out, docToEntity(doc))
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].UploadedAt.Before(out[j].UploadedAt)
+	})
+	return out, nil
 }
 
 func docToEntity(d documentDoc) entities.Document {

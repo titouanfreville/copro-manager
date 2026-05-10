@@ -105,19 +105,6 @@ type Usecases interface {
 	// row. defaultPayerFoyerID is applied to all rows since the legacy
 	// format doesn't track payer identity.
 	ImportCSV(ctx context.Context, r io.Reader, defaultPayerFoyerID string) (*ImportSummary, error)
-
-	// RequestUploadURL validates the file declaration and returns a
-	// short-lived V4 signed PUT URL the browser uploads directly to.
-	RequestUploadURL(ctx context.Context, expenseID string, in RequestUploadInput) (*RequestUploadResult, error)
-	// RecordAttachment is the second leg of the upload dance — verifies
-	// the GCS object exists with the declared metadata, then writes the
-	// inline Attachment record on the expense.
-	RecordAttachment(ctx context.Context, expenseID string, in RecordAttachmentInput) (*entities.Attachment, error)
-	// GetDownloadURL issues a fresh signed GET URL for an existing
-	// attachment. Always called per-click — the URL is short-lived.
-	GetDownloadURL(ctx context.Context, expenseID, attachmentID, actorUserID string) (string, time.Time, error)
-	// DeleteAttachment drops both the GCS blob and the inline metadata.
-	DeleteAttachment(ctx context.Context, expenseID, attachmentID, actorUserID string) error
 }
 
 // AlertsHook is the narrow contract this package needs from the alerts
@@ -131,6 +118,13 @@ type AlertsHook interface {
 	ResolveByExpense(ctx context.Context, expenseID string) error
 }
 
+// DocumentsHook is the narrow contract this package needs from the
+// documents usecase, used by the expense-delete cascade to wipe linked
+// Documents (the unified attachment store) along with their GCS blobs.
+type DocumentsHook interface {
+	DeleteByLinkedExpense(ctx context.Context, expenseID string) error
+}
+
 type usecases struct {
 	logger      *zap.Logger
 	expenses    interfaces.ExpensesStore
@@ -142,11 +136,12 @@ type usecases struct {
 	settlements interfaces.SettlementsStore
 	meters      interfaces.MetersStore
 	alerts      AlertsHook
+	documents   DocumentsHook
 	now         func() time.Time
 }
 
-// New builds an expenses usecase. `alerts` may be nil during local dev
-// or in tests — every hook call is guarded.
+// New builds an expenses usecase. `alerts` and `documents` may be nil
+// during local dev or in tests — every hook call is guarded.
 func New(
 	logger *zap.Logger,
 	expenses interfaces.ExpensesStore,
@@ -158,6 +153,7 @@ func New(
 	settlements interfaces.SettlementsStore,
 	meters interfaces.MetersStore,
 	alerts AlertsHook,
+	docs DocumentsHook,
 ) Usecases {
 	return &usecases{
 		logger:      logger.Named("usecases.expenses"),
@@ -170,6 +166,7 @@ func New(
 		settlements: settlements,
 		meters:      meters,
 		alerts:      alerts,
+		documents:   docs,
 		now:         time.Now,
 	}
 }
@@ -482,10 +479,24 @@ func (uc *usecases) Delete(ctx context.Context, id, actorUserID string) error {
 		return fmt.Errorf("%w: expense %q", domainerrors.ErrNotFound, id)
 	}
 
-	// Cascade attachments BEFORE deleting the parent so the subcollection
-	// docs are reachable. Best-effort: if Firestore subcollection delete or
-	// GCS blob cleanup fails, we still drop the parent so the user's "delete"
-	// action isn't blocked by orphan-cleanup hiccups.
+	// Cascade BEFORE deleting the parent so child references are reachable.
+	// Best-effort: if any cleanup leg fails we still drop the parent so the
+	// user's "delete" action isn't blocked by orphan-cleanup hiccups.
+	//
+	// Three legs to cover both legacy and migrated state:
+	//   1. Linked Documents — the unified attachment store; deletes both
+	//      the Firestore record and the GCS blob it points at (which lives
+	//      under either documents/ or the legacy expenses/ prefix).
+	//   2. Legacy attachments subcollection — drained at boot by the
+	//      migration but called here too in case any survived.
+	//   3. Legacy GCS prefix expenses/{id}/ — for any blob whose Document
+	//      record was already migrated and deleted via leg 1, this is a
+	//      no-op; otherwise it cleans the byproducts.
+	if uc.documents != nil {
+		if err := uc.documents.DeleteByLinkedExpense(ctx, id); err != nil {
+			log.Warn("linked-documents cleanup failed (orphan docs may remain)", zap.Error(err))
+		}
+	}
 	if uc.attachments != nil {
 		if err := uc.attachments.DeleteAll(ctx, id); err != nil {
 			log.Warn("attachment subcollection cleanup failed (orphan docs may remain)", zap.Error(err))

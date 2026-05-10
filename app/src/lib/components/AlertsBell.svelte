@@ -9,12 +9,13 @@
 <script lang="ts">
 	import { page } from '$app/stores';
 	import { authState } from '$lib/auth';
-	import { subscribeAlertsForFoyer, subscribeFoyers } from '$lib/live';
+	import { subscribeAlerts, subscribeAlertsForFoyer, subscribeFoyers } from '$lib/live';
 	import type { Alert, Foyer } from '$lib/api';
 	import AlertsPanel from './AlertsPanel.svelte';
 	import IconButton from './IconButton.svelte';
 
 	let foyers = $state<Foyer[]>([]);
+	let foyersLoaded = $state(false);
 	let alerts = $state<Alert[]>([]);
 	let modalOpen = $state(false);
 	let bellEl = $state<HTMLButtonElement | null>(null);
@@ -27,31 +28,74 @@
 		return foyers.find((f) => f.member_ids.includes(uid)) ?? null;
 	});
 
+	// True when foyers have arrived but none lists the signed-in UID in
+	// member_ids. Indicates a data-link issue (foyer doc out of sync with
+	// Firebase Auth) — surface in the panel so the user knows the bell
+	// isn't broken, and fall back to an unfiltered alerts feed so they at
+	// least see what's addressed to whichever foyer their data points at.
+	let foyerLinkMissing = $derived(
+		$authState.status === 'signed-in' && foyersLoaded && currentFoyer === null
+	);
+
+	// Badge counts every undismissed alert the user hasn't read. We
+	// intentionally do NOT exclude resolved alerts — once the server
+	// auto-resolves an entry (e.g. missing-receipt cleared by an
+	// attachment), it should still register as "new" until the user
+	// has actually opened the panel. Resolved + read filters
+	// independently in the panel below.
 	let unreadCount = $derived(
-		alerts.filter((a) => !a.read_at && !a.resolved_at && !a.dismissed_at).length
+		alerts.filter((a) => !a.read_at && !a.dismissed_at).length
 	);
 
 	$effect(() => {
 		if ($authState.status !== 'signed-in') return;
+		foyersLoaded = false;
 		// Pass an onError callback so a permission-denied (rules
 		// misconfigured, signed-out mid-flight, etc.) doesn't silently
 		// hide the bell with no diagnostic — at least leave a console
 		// breadcrumb for the next debugger.
 		const unsub = subscribeFoyers(
-			(rows) => (foyers = rows),
+			(rows) => {
+				foyers = rows;
+				foyersLoaded = true;
+			},
 			(err) => console.warn('AlertsBell foyers error', err)
 		);
 		return () => unsub();
 	});
 
 	$effect(() => {
-		const foyerID = currentFoyer?.id ?? '';
-		if (!foyerID) {
+		if ($authState.status !== 'signed-in') {
 			alerts = [];
 			return;
 		}
-		const unsub = subscribeAlertsForFoyer(
-			foyerID,
+		const foyerID = currentFoyer?.id ?? '';
+		if (foyerID) {
+			const unsub = subscribeAlertsForFoyer(
+				foyerID,
+				(rows) => (alerts = rows),
+				(err) => console.warn('AlertsBell alerts error', err)
+			);
+			return () => unsub();
+		}
+		if (!foyersLoaded) {
+			alerts = [];
+			return;
+		}
+		// Fallback: foyers loaded but no foyer claims this UID. Most
+		// likely a data-link miss between Firebase Auth and the foyer
+		// doc — log the diagnostic and read alerts unfiltered so the
+		// user still sees anything the API addressed to a foyer they
+		// SHOULD belong to. Firestore rules already gate by auth, so
+		// this isn't a leak — just a lookup that's wider than ideal.
+		console.warn(
+			'AlertsBell: signed-in UID is not in any foyer.member_ids — falling back to unfiltered alerts feed',
+			{
+				uid: $authState.user.uid,
+				foyer_member_ids: foyers.map((f) => ({ id: f.id, member_ids: f.member_ids }))
+			}
+		);
+		const unsub = subscribeAlerts(
 			(rows) => (alerts = rows),
 			(err) => console.warn('AlertsBell alerts error', err)
 		);
@@ -171,6 +215,12 @@
 			/>
 		</header>
 		<div class="modal-body">
+			{#if foyerLinkMissing}
+				<p class="link-warning" role="alert">
+					Aucun foyer ne référence ton compte. Affichage de toutes les alertes le temps
+					qu'un admin recroise les liens (foyer.member_ids ↔ Firebase UID).
+				</p>
+			{/if}
 			<AlertsPanel {alerts} />
 		</div>
 	</div>
@@ -277,6 +327,16 @@
 	.modal-body {
 		overflow-y: auto;
 		padding: 1rem 1.2rem 1.2rem;
+	}
+	.link-warning {
+		margin: 0 0 0.9rem;
+		padding: 0.7rem 0.85rem;
+		background: rgba(194, 78, 42, 0.07);
+		border: 1px solid rgba(194, 78, 42, 0.25);
+		border-radius: 0.55rem;
+		color: var(--accent-deep, #8f3a1f);
+		font-size: 0.85rem;
+		line-height: 1.4;
 	}
 
 	@media (max-width: 560px) {

@@ -22,8 +22,8 @@
 		updateExpense
 	} from '$lib/expenses';
 	import {
-		subscribeAllAttachments,
 		subscribeCategories,
+		subscribeDocuments,
 		subscribeExpenses,
 		subscribeFoyers,
 		subscribeMeters,
@@ -503,10 +503,28 @@
 			subscribeTemplates((rows) => {
 				templates = rows;
 			}, onErr),
-			subscribeAllAttachments((atts) => {
+			// Per-expense attachments live in the unified `documents`
+			// collection now (post-migration): a Document with
+			// `linked_expense_id` set IS an attachment. Filter and
+			// reshape into ExpenseAttachment so the rest of the page
+			// (download flow, thumbnail rendering, etc.) stays the same.
+			subscribeDocuments((docs) => {
 				const grouped: Record<string, ExpenseAttachment[]> = {};
-				for (const a of atts) {
-					(grouped[a.expense_id] ||= []).push(a);
+				for (const d of docs) {
+					if (!d.linked_expense_id) continue;
+					(grouped[d.linked_expense_id] ||= []).push({
+						expense_id: d.linked_expense_id,
+						id: d.id,
+						object_name: d.object_name,
+						content_type: d.content_type,
+						size_bytes: d.size_bytes,
+						original_filename: d.original_filename,
+						uploaded_at: d.uploaded_at,
+						uploaded_by: d.uploaded_by
+					});
+				}
+				for (const list of Object.values(grouped)) {
+					list.sort((a, b) => a.uploaded_at.localeCompare(b.uploaded_at));
 				}
 				attachmentsByExpense = grouped;
 			}, onErr),
@@ -610,7 +628,9 @@
 	}
 
 	// Each category gets a stable monogram + tone pair so the eye learns
-	// the rhythm. Unknown categories fall back to a neutral pair.
+	// the rhythm. The user-customizable values (Category.icon, Category.color)
+	// take priority; falls back to the predefined palette below for the
+	// seeded set, or a neutral pair for anything custom without overrides.
 	type CatStyle = { mono: string; tone: string; tint: string };
 	const CATEGORY_STYLES: Record<string, CatStyle> = {
 		eau: { mono: 'EA', tone: '#3F6B82', tint: '#E1ECF2' },
@@ -620,14 +640,25 @@
 		assurance: { mono: 'AS', tone: '#5A7461', tint: '#E6EDE5' },
 		syndic: { mono: 'SY', tone: '#4A4744', tint: '#E8E4E0' }
 	};
+	// Soft a 6-digit hex to a translucent tint (~14% alpha) so the chip
+	// has a subtle wash without storing two colors per category.
+	function tintFromHex(hex: string): string {
+		return hex.length === 7 ? hex + '24' : hex;
+	}
 	function categoryStyle(id: string): CatStyle {
-		return (
-			CATEGORY_STYLES[id] ?? {
-				mono: id.slice(0, 2).toUpperCase(),
-				tone: '#7A7268',
-				tint: '#ECE8E0'
-			}
-		);
+		const cat = categories.find((c) => c.id === id);
+		const fallback = CATEGORY_STYLES[id] ?? {
+			mono: id.slice(0, 2).toUpperCase(),
+			tone: '#7A7268',
+			tint: '#ECE8E0'
+		};
+		if (!cat) return fallback;
+		const tone = cat.color || fallback.tone;
+		return {
+			mono: cat.icon || fallback.mono,
+			tone,
+			tint: cat.color ? tintFromHex(cat.color) : fallback.tint
+		};
 	}
 
 	function categoryName(id: string): string {

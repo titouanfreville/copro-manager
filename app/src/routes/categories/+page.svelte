@@ -27,15 +27,34 @@
 	let isEditing = $derived(editingId !== null);
 	let mName = $state('');
 	let mMode = $state<DistributionMode | ''>('');
+	let mIcon = $state('');
+	let mColor = $state('');
 	let saving = $state(false);
 	let formError = $state('');
 	let deletingId = $state<string | null>(null);
+
+	// Curated palette: each chip shows the emoji over its accent so the
+	// preview reads as a single object. Free-text icon entry stays
+	// available for users who want something off-list.
+	const ICON_PRESETS = ['💧', '⚡', '🏛️', '🔧', '🛡️', '🏢', '🔥', '🌳', '🚿', '🚪', '🅿️', '🧹'];
+	const COLOR_PRESETS = [
+		'#3F6B82', // bleu eau
+		'#A37423', // ocre électricité
+		'#7A5E87', // mauve taxe
+		'#9E6A4D', // terre cuite
+		'#5A7461', // vert assurance
+		'#4A4744', // ardoise syndic
+		'#C24E2A', // accent
+		'#7A7268' // neutre
+	];
 
 	function resetForm() {
 		editingId = null;
 		editingPredefined = false;
 		mName = '';
 		mMode = '';
+		mIcon = '';
+		mColor = '';
 		formError = '';
 	}
 
@@ -50,6 +69,8 @@
 		editingPredefined = c.predefined;
 		mName = c.name;
 		mMode = c.default_distribution_mode ?? '';
+		mIcon = c.icon ?? '';
+		mColor = c.color ?? '';
 		modalOpen = true;
 	}
 
@@ -67,17 +88,26 @@
 			formError = 'Le nom doit faire au moins 2 caractères.';
 			return;
 		}
+		const trimmedColor = mColor.trim();
+		if (trimmedColor && !/^#[0-9a-fA-F]{6}$/.test(trimmedColor)) {
+			formError = 'Couleur invalide (attendu : #RRGGBB).';
+			return;
+		}
 		saving = true;
 		try {
 			if (isEditing && editingId) {
 				await updateCategory(editingId, {
 					name: editingPredefined ? undefined : mName.trim(),
-					default_distribution_mode: (mMode || undefined) as DistributionMode | undefined
+					default_distribution_mode: (mMode || undefined) as DistributionMode | undefined,
+					icon: mIcon.trim(),
+					color: trimmedColor.toLowerCase()
 				});
 			} else {
 				await createCategory({
 					name: mName.trim(),
-					default_distribution_mode: (mMode || undefined) as DistributionMode | undefined
+					default_distribution_mode: (mMode || undefined) as DistributionMode | undefined,
+					icon: mIcon.trim() || undefined,
+					color: trimmedColor.toLowerCase() || undefined
 				});
 			}
 			modalOpen = false;
@@ -163,6 +193,14 @@
 					{#each categories as c (c.id)}
 						<article class="card">
 							<header class="card-head">
+								<span
+									class="card-chip"
+									aria-hidden="true"
+									style="background:{(c.color || '#7A7268') + '22'};color:{c.color ||
+										'#44403a'};border-color:{(c.color || '#7A7268') + '55'}"
+								>
+									{c.icon || c.name.slice(0, 2).toUpperCase()}
+								</span>
 								<h2 class="card-name">{c.name}</h2>
 								{#if c.predefined}
 									<span class="card-badge card-badge-pre">prédéfinie</span>
@@ -249,6 +287,73 @@
 							<option value="water_3_meters">Eau (3 sous-compteurs)</option>
 						</select>
 					</label>
+
+					<div class="field">
+						<span class="lbl">Icône</span>
+						<div class="picker-row">
+							<input
+								type="text"
+								class="icon-input"
+								maxlength="8"
+								bind:value={mIcon}
+								placeholder="💧"
+								aria-label="Icône (emoji)"
+							/>
+							<div class="picker-presets" role="listbox" aria-label="Icônes suggérées">
+								{#each ICON_PRESETS as preset (preset)}
+									<button
+										type="button"
+										class="preset-chip"
+										class:selected={mIcon === preset}
+										onclick={() => (mIcon = preset)}
+										aria-label="Choisir {preset}"
+									>
+										{preset}
+									</button>
+								{/each}
+							</div>
+						</div>
+					</div>
+
+					<div class="field">
+						<span class="lbl">Couleur d'accent</span>
+						<div class="picker-row">
+							<input
+								type="text"
+								class="color-input"
+								maxlength="7"
+								bind:value={mColor}
+								placeholder="#3F6B82"
+								aria-label="Couleur (hex)"
+							/>
+							<div class="picker-presets" role="listbox" aria-label="Couleurs suggérées">
+								{#each COLOR_PRESETS as preset (preset)}
+									<button
+										type="button"
+										class="color-chip"
+										class:selected={mColor.toLowerCase() === preset.toLowerCase()}
+										style="background:{preset}"
+										onclick={() => (mColor = preset)}
+										aria-label="Choisir {preset}"
+									></button>
+								{/each}
+							</div>
+						</div>
+					</div>
+
+					{#if mIcon || mColor || mName.trim()}
+						<div class="preview-row">
+							<span class="preview-lbl">Aperçu</span>
+							<span
+								class="preview-chip"
+								style="background:{(mColor || '#7A7268') + '22'};color:{mColor ||
+									'#44403a'};border-color:{(mColor || '#7A7268') + '55'}"
+							>
+								<span class="preview-icon">{mIcon || (mName.trim().slice(0, 2).toUpperCase() || '··')}</span>
+								<span class="preview-name">{mName.trim() || 'Catégorie'}</span>
+							</span>
+						</div>
+					{/if}
 
 					{#if formError}
 						<p class="form-error" role="alert">{formError}</p>
@@ -373,9 +478,25 @@
 	}
 	.card-head {
 		display: flex;
-		align-items: baseline;
-		justify-content: space-between;
+		align-items: center;
+		justify-content: flex-start;
 		gap: 0.6rem;
+	}
+	.card-chip {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 2rem;
+		height: 2rem;
+		border-radius: 0.55rem;
+		border: 1px solid;
+		font-size: 1.05rem;
+		font-weight: 600;
+		font-family: var(--ui);
+		flex-shrink: 0;
+	}
+	.card-head .card-name {
+		flex: 1;
 	}
 	.card-name {
 		font-family: var(--display);
@@ -510,6 +631,76 @@
 		outline: none;
 		border-color: var(--accent);
 		box-shadow: 0 0 0 3px var(--accent-soft);
+	}
+	.picker-row {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+	.icon-input,
+	.color-input {
+		font-family: var(--ui);
+		max-width: 8rem;
+	}
+	.picker-presets {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.35rem;
+	}
+	.preset-chip {
+		width: 2.1rem;
+		height: 2.1rem;
+		border-radius: 0.5rem;
+		border: 1px solid var(--hairline-2);
+		background: var(--surface);
+		font-size: 1.1rem;
+		cursor: pointer;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		padding: 0;
+	}
+	.preset-chip.selected {
+		border-color: var(--accent);
+		box-shadow: 0 0 0 2px var(--accent-soft);
+	}
+	.color-chip {
+		width: 1.8rem;
+		height: 1.8rem;
+		border-radius: 0.45rem;
+		border: 1px solid var(--hairline-2);
+		cursor: pointer;
+		padding: 0;
+	}
+	.color-chip.selected {
+		border-color: var(--ink);
+		box-shadow: 0 0 0 2px var(--accent-soft);
+	}
+	.preview-row {
+		display: flex;
+		align-items: center;
+		gap: 0.6rem;
+		padding-top: 0.2rem;
+	}
+	.preview-lbl {
+		font-size: 0.7rem;
+		text-transform: uppercase;
+		letter-spacing: 0.14em;
+		color: var(--ink-4);
+		font-weight: 600;
+	}
+	.preview-chip {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.45rem;
+		padding: 0.3rem 0.65rem;
+		border-radius: 999px;
+		border: 1px solid;
+		font-size: 0.85rem;
+		font-weight: 500;
+	}
+	.preview-icon {
+		font-size: 1rem;
 	}
 	.form-error {
 		color: var(--danger);

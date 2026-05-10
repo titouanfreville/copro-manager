@@ -122,18 +122,6 @@ func (s *stubExpenses) Upsert(context.Context, expenses.CreateInput) (*expenses.
 func (s *stubExpenses) ImportCSV(context.Context, io.Reader, string) (*expenses.ImportSummary, error) {
 	panic("unexpected: ImportCSV")
 }
-func (s *stubExpenses) RequestUploadURL(context.Context, string, expenses.RequestUploadInput) (*expenses.RequestUploadResult, error) {
-	panic("unexpected: RequestUploadURL")
-}
-func (s *stubExpenses) RecordAttachment(context.Context, string, expenses.RecordAttachmentInput) (*entities.Attachment, error) {
-	panic("unexpected: RecordAttachment")
-}
-func (s *stubExpenses) GetDownloadURL(context.Context, string, string, string) (string, time.Time, error) {
-	panic("unexpected: GetDownloadURL")
-}
-func (s *stubExpenses) DeleteAttachment(context.Context, string, string, string) error {
-	panic("unexpected: DeleteAttachment")
-}
 
 // ─── Helpers ────────────────────────────────────────────────────────
 

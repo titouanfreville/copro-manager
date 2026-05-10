@@ -42,7 +42,12 @@
 		void getAvailability().then((a) => (pushState = a));
 	});
 
-	let activeAlerts = $derived(alerts.filter((a) => !a.dismissed_at && !a.resolved_at));
+	// Show every alert that the user hasn't dismissed — including
+	// auto-resolved ones (e.g. a missing-receipt alert the server marked
+	// resolved when an attachment finally landed). The user explicitly
+	// asked for "stays in view until I delete it"; the resolved flag is
+	// system-level metadata, not a UI signal.
+	let activeAlerts = $derived(alerts.filter((a) => !a.dismissed_at));
 	let unread = $derived(activeAlerts.filter((a) => !a.read_at));
 	let read = $derived(activeAlerts.filter((a) => a.read_at));
 

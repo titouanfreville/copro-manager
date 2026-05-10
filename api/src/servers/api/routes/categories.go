@@ -15,11 +15,15 @@ import (
 type createCategoryRequest struct {
 	Name                    string `json:"name"`
 	DefaultDistributionMode string `json:"default_distribution_mode,omitempty"`
+	Icon                    string `json:"icon,omitempty"`
+	Color                   string `json:"color,omitempty"`
 }
 
 type updateCategoryRequest struct {
 	Name                    string `json:"name,omitempty"`
 	DefaultDistributionMode string `json:"default_distribution_mode,omitempty"`
+	Icon                    string `json:"icon,omitempty"`
+	Color                   string `json:"color,omitempty"`
 }
 
 // CreateCategory handles POST /categories.
@@ -34,6 +38,8 @@ func (e *Endpoints) CreateCategory(w http.ResponseWriter, r *http.Request) {
 		ActorUserID:             actorUID,
 		Name:                    req.Name,
 		DefaultDistributionMode: entities.DistributionMode(req.DefaultDistributionMode),
+		Icon:                    req.Icon,
+		Color:                   req.Color,
 	})
 	if err != nil {
 		status, body := routeerrors.ManageErrors(err)
@@ -60,6 +66,8 @@ func (e *Endpoints) UpdateCategory(w http.ResponseWriter, r *http.Request) {
 		ActorUserID:             actorUID,
 		Name:                    req.Name,
 		DefaultDistributionMode: entities.DistributionMode(req.DefaultDistributionMode),
+		Icon:                    req.Icon,
+		Color:                   req.Color,
 	})
 	if err != nil {
 		status, body := routeerrors.ManageErrors(err)

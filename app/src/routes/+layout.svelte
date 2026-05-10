@@ -109,12 +109,26 @@
 	}
 
 	onMount(async () => {
+		// Dev-mode SW unregistration runs in +layout.ts at module eval
+		// so it kicks in before this component mounts. Skip the prod SW
+		// register path in dev too — `pwaInfo` is null when vite-pwa's
+		// devOptions.enabled is false, but be explicit for clarity.
+		if (import.meta.env.DEV) return;
 		if (pwaInfo) {
 			const { useRegisterSW } = await import('virtual:pwa-register/svelte');
 			useRegisterSW({ immediate: true });
 		}
 	});
 </script>
+
+<svelte:head>
+	{#if !import.meta.env.DEV}
+		<!-- vite-pwa generates manifest.webmanifest at build time. We keep
+		     the link out of app.html so dev-mode (where no manifest is
+		     served) doesn't 404 on every reload. -->
+		<link rel="manifest" href="/manifest.webmanifest" />
+	{/if}
+</svelte:head>
 
 {#if $authState.status === 'signed-in' && $page.url.pathname !== '/login'}
 	<InstallBanner />

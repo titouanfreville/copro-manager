@@ -3,7 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <link rel="icon" href="%sveltekit.assets%/favicon.svg" />
-    <link rel="manifest" href="%sveltekit.assets%/manifest.webmanifest" />
+    <!-- The manifest link is injected by +layout.svelte in production
+         only — vite-pwa generates the file at build time, but in dev
+         (`npm run dev`) the file isn't served and a static link here
+         would 404 every page load. -->
     <link
       rel="apple-touch-icon"
       href="%sveltekit.assets%/icon-192.png"
@@ -13,6 +16,7 @@
       content="width=device-width, initial-scale=1, viewport-fit=cover"
     />
     <meta name="theme-color" content="#faf8f4" />
+    <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta
       name="apple-mobile-web-app-status-bar-style"

@@ -87,25 +87,28 @@
 		{/each}
 	</nav>
 
-	<div class="user-desktop">
+	<div class="actions">
 		{#if $authState.status === 'signed-in'}
 			<AlertsBell />
-			<span class="user-email" title={$authState.user.email}>
-				{$authState.user.email}
-			</span>
-			<button class="logout" type="button" onclick={() => logout()}>Déconnexion</button>
 		{/if}
-	</div>
-
-	<div class="burger">
-		<IconButton
-			icon="menu"
-			aria-label="Ouvrir le menu"
-			variant="ghost"
-			onclick={openMenu}
-			aria-expanded={menuOpen}
-			aria-controls="topbar-menu"
-		/>
+		<div class="user-desktop">
+			{#if $authState.status === 'signed-in'}
+				<span class="user-email" title={$authState.user.email}>
+					{$authState.user.email}
+				</span>
+				<button class="logout" type="button" onclick={() => logout()}>Déconnexion</button>
+			{/if}
+		</div>
+		<div class="burger">
+			<IconButton
+				icon="menu"
+				aria-label="Ouvrir le menu"
+				variant="ghost"
+				onclick={openMenu}
+				aria-expanded={menuOpen}
+				aria-controls="topbar-menu"
+			/>
+		</div>
 	</div>
 </header>
 
@@ -248,6 +251,11 @@
 		pointer-events: none;
 	}
 
+	.actions {
+		display: flex;
+		align-items: center;
+		gap: 0.6rem;
+	}
 	.user-desktop {
 		display: flex;
 		flex-direction: column;
@@ -308,6 +316,9 @@
 		}
 		.burger {
 			display: block;
+		}
+		.actions {
+			gap: 0.4rem;
 		}
 	}
 

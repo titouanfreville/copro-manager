@@ -15,12 +15,10 @@
 		uploadDocument
 	} from '$lib/documents';
 	import {
-		subscribeAllAttachments,
 		subscribeCategories,
 		subscribeDocuments,
 		subscribeExpenses,
-		subscribeFoyers,
-		type ExpenseAttachment
+		subscribeFoyers
 	} from '$lib/live';
 	import type { Category, Document, Expense, Foyer } from '$lib/api';
 
@@ -28,7 +26,6 @@
 	let foyers = $state<Foyer[]>([]);
 	let categories = $state<Category[]>([]);
 	let documents = $state<Document[]>([]);
-	let attachments = $state<ExpenseAttachment[]>([]);
 	let expenses = $state<Expense[]>([]);
 	let liveError = $state('');
 
@@ -40,17 +37,18 @@
 			subscribeFoyers((rows) => (foyers = rows), onErr),
 			subscribeCategories((rows) => (categories = rows), onErr),
 			subscribeDocuments((rows) => (documents = rows), onErr),
-			subscribeAllAttachments((rows) => (attachments = rows), onErr),
 			subscribeExpenses((rows) => (expenses = rows), onErr)
 		];
 		return () => unsubs.forEach((u) => u());
 	});
 
-	// ─── Unified ArchiveDoc ────────────────────────────────────
-	// Merges standalone documents (`kind: 'standalone'`) with per-expense
-	// attachments (`kind: 'attachment'`). One row shape, two storage paths.
+	// ─── ArchiveDoc ────────────────────────────────────────────
+	// Single source: every document lives in the unified `documents`
+	// collection now (post-migration). A doc is either standalone (no
+	// linked_expense_id) or pinned to an expense (linked_expense_id set).
+	// The latter can't be edited or deleted from this archive — those
+	// actions belong to the parent expense's row.
 	type ArchiveDoc = {
-		kind: 'standalone' | 'attachment';
 		id: string;
 		category_id: string;
 		group: string; // empty = "sans groupe"
@@ -66,8 +64,10 @@
 	let archive = $derived.by(() => {
 		const out: ArchiveDoc[] = [];
 		for (const d of documents) {
+			const linkedExp = d.linked_expense_id
+				? expenses.find((e) => e.id === d.linked_expense_id)
+				: undefined;
 			out.push({
-				kind: 'standalone',
 				id: d.id,
 				category_id: d.category_id,
 				group: (d.group ?? '').trim(),
@@ -76,23 +76,8 @@
 				size_bytes: d.size_bytes,
 				content_type: d.content_type,
 				uploaded_at: d.uploaded_at,
-				linked_expense_id: d.linked_expense_id
-			});
-		}
-		for (const a of attachments) {
-			const exp = expenses.find((e) => e.id === a.expense_id);
-			out.push({
-				kind: 'attachment',
-				id: `att:${a.expense_id}:${a.id}`,
-				category_id: exp?.category_id ?? '',
-				group: '', // attachments have no group; they get bucketed into "Sans groupe"
-				title: a.original_filename || '(pièce jointe sans nom)',
-				description: '',
-				size_bytes: a.size_bytes,
-				content_type: a.content_type,
-				uploaded_at: a.uploaded_at,
-				linked_expense_id: a.expense_id,
-				linked_expense_name: exp?.name
+				linked_expense_id: d.linked_expense_id,
+				linked_expense_name: linkedExp?.name
 			});
 		}
 		return out;
@@ -112,8 +97,8 @@
 	let filteredArchive = $derived.by(() => {
 		const q = debouncedQuery.trim().toLocaleLowerCase('fr');
 		return archive.filter((d) => {
-			if (linkageFilter === 'standalone' && d.kind !== 'standalone') return false;
-			if (linkageFilter === 'linked' && d.kind !== 'attachment' && !d.linked_expense_id) return false;
+			if (linkageFilter === 'standalone' && d.linked_expense_id) return false;
+			if (linkageFilter === 'linked' && !d.linked_expense_id) return false;
 			if (categoryFilter && d.category_id !== categoryFilter) return false;
 			if (q) {
 				const hay = (d.title + ' ' + d.description).toLocaleLowerCase('fr');
@@ -234,17 +219,7 @@
 		// gate happy — popup blockers eat `window.open` after `await`.
 		const popup = window.open('about:blank', '_blank', 'noopener,noreferrer');
 		try {
-			let url: string;
-			if (d.kind === 'standalone') {
-				url = await resolveStandaloneUrl(d.id);
-			} else {
-				// Attachment: use the existing per-expense download endpoint.
-				const expId = d.linked_expense_id!;
-				const attId = d.id.split(':')[2];
-				const { getAttachmentDownloadUrl } = await import('$lib/expenses');
-				const dl = await getAttachmentDownloadUrl(expId, attId);
-				url = dl.url;
-			}
+			const url = await resolveStandaloneUrl(d.id);
 			if (popup) {
 				popup.location.href = url;
 			} else {
@@ -382,7 +357,7 @@
 	}
 
 	async function onDelete(d: ArchiveDoc) {
-		if (d.kind === 'attachment') {
+		if (d.linked_expense_id) {
 			liveError = 'Supprimer cette pièce jointe depuis la dépense correspondante.';
 			return;
 		}
@@ -400,7 +375,7 @@
 	}
 
 	function onEditClick(d: ArchiveDoc) {
-		if (d.kind === 'attachment') {
+		if (d.linked_expense_id) {
 			liveError = 'Modifier cette pièce jointe depuis la dépense correspondante.';
 			return;
 		}
@@ -512,7 +487,7 @@
 								{#each section.rows as d (d.id)}
 									<article class="card">
 										<div class="card-thumb" class:card-thumb-pdf={!isImageKind(d.content_type)}>
-											{#if isImageKind(d.content_type) && d.kind === 'standalone'}
+											{#if isImageKind(d.content_type)}
 												{#await resolveStandaloneUrl(d.id)}
 													<div class="card-thumb-loading"></div>
 												{:then thumbUrl}
@@ -528,7 +503,7 @@
 											<p class="card-title" title={d.title}>{d.title}</p>
 											<p class="card-meta">
 												<span class="card-cat">{categoryName(d.category_id)}</span>
-												{#if d.kind === 'attachment'}
+												{#if d.linked_expense_id}
 													<span class="card-link">lié · {d.linked_expense_name ?? ''}</span>
 												{:else}
 													<span class="card-standalone">indépendant</span>
@@ -544,7 +519,7 @@
 												aria-label="Voir {d.title}"
 												onclick={() => onView(d)}
 											/>
-											{#if d.kind === 'standalone'}
+											{#if !d.linked_expense_id}
 												<IconButton
 													icon="edit"
 													aria-label="Modifier {d.title}"

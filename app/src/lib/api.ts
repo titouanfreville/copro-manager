@@ -40,6 +40,10 @@ export interface Category {
    */
   hidden?: boolean;
   default_distribution_mode?: DistributionMode;
+  /** Optional emoji or short string rendered next to the name. */
+  icon?: string;
+  /** Optional `#RRGGBB` accent color. */
+  color?: string;
 }
 
 export type DistributionMode =

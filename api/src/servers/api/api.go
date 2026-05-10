@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	fs "cloud.google.com/go/firestore"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"go.uber.org/zap"
@@ -26,10 +27,10 @@ type API struct {
 }
 
 // NewHTTP creates a new HTTP API transport.
-func NewHTTP(httpConfig *config.Config, logger *zap.Logger, uc *usecases.Usecases, mw *middlewares.Middlewares) servers.TCP {
+func NewHTTP(httpConfig *config.Config, logger *zap.Logger, uc *usecases.Usecases, mw *middlewares.Middlewares, fsClient *fs.Client) servers.TCP {
 	return &API{
 		httpConfig:  httpConfig,
-		endpoints:   routes.NewEndpoints(logger, uc),
+		endpoints:   routes.NewEndpoints(logger, uc, fsClient),
 		middlewares: mw,
 	}
 }

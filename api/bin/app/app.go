@@ -142,6 +142,7 @@ func main() {
 			func(a alerts.Usecases) templates.AlertsHook { return a },
 			func(a alerts.Usecases) settlements.AlertsHook { return a },
 			func(a alerts.Usecases) meters.AlertsHook { return a },
+			func(d documents.Usecases) expenses.DocumentsHook { return d },
 			expenses.New,
 			templates.New,
 			settlements.New,
@@ -171,6 +172,22 @@ func main() {
 					return err
 				}
 				return nil
+			},
+		),
+		// Best-effort runtime migration: collapse the legacy
+		// `expenses/{id}/attachments/{aid}` subcollection into top-level
+		// `documents/{aid}` rows with `linked_expense_id` set. Idempotent
+		// and safe to re-run on every boot — it stops touching rows once
+		// they're all migrated. A failure is logged but doesn't abort
+		// startup: the API still serves correctly while old subdocs
+		// linger.
+		fx.Invoke(
+			func(client *fs.Client, logger *uberzap.Logger) {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+				defer cancel()
+				if err := documentsadapter.MigrateAttachmentsToDocuments(ctx, client, logger); err != nil {
+					logger.Named("bootstrap").Warn("attachments→documents migration failed (continuing)", uberzap.Error(err))
+				}
 			},
 		),
 		fx.Invoke(api.Run),

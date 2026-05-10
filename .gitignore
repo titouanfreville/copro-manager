@@ -64,6 +64,9 @@ creds/
 # Local YAML overrides — layered on top of conf/main.yml via CONFIG_FILE
 api/conf/local.yml
 
+# GoLand HTTP Client private env — holds the admin key for local/prod requests
+api/http/http-client.private.env.json
+
 # Personal expense CSVs (used as import sources, not committed)
 data/*.csv
 private/*.csv

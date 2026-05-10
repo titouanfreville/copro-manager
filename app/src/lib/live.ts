@@ -5,7 +5,6 @@
 
 import {
   collection,
-  collectionGroup,
   onSnapshot,
   type QueryDocumentSnapshot,
   type Unsubscribe,
@@ -128,6 +127,8 @@ export function subscribeCategories(
         hidden: Boolean(d.hidden),
         default_distribution_mode:
           d.default_distribution_mode as Category["default_distribution_mode"],
+        icon: typeof d.icon === "string" && d.icon ? d.icon : undefined,
+        color: typeof d.color === "string" && d.color ? d.color : undefined,
       }) satisfies Category,
     // Hide system categories like the CSV-import triage bucket (`tbd`).
     // The API persists them so expenses can FK-reference them, but
@@ -144,11 +145,11 @@ export function subscribeCategories(
 
 // ─── Expenses ────────────────────────────────────────────────────────
 //
-// Attachments live in the subcollection `expenses/{id}/attachments/{aid}`
-// (not inline on the expense doc) since the v2 review. Use
-// `subscribeAllAttachments` alongside `subscribeExpenses` and merge by
-// expense_id in the page — that keeps the listener overhead at two
-// (collection + collectionGroup) regardless of how many expenses exist.
+// Per-expense attachments are now Documents with `linked_expense_id`
+// set (the legacy `expenses/{id}/attachments` subcollection was
+// migrated). Pages that need attachments call `subscribeDocuments` and
+// filter by `linked_expense_id` — one listener covers both standalone
+// and per-expense documents.
 
 export function subscribeExpenses(
   onData: (exps: Expense[]) => void,
@@ -195,48 +196,14 @@ export function subscribeExpenses(
   );
 }
 
-// ─── Attachments (subcollection across all expenses) ─────────────────
+// ─── Per-expense attachments (view shape) ────────────────────────────
 //
-// One collectionGroup listener delivers every attachment doc across every
-// expense in the copro. Callers index by `expense_id` to merge into their
-// expense rows. The `expense_id` is derived from the doc's parent ref —
-// not a stored field — so it's always trustworthy.
-
+// `ExpenseAttachment` is the shape the expenses page renders for inline
+// thumbnails — it's an `Attachment` with the parent expense id attached
+// as a flat field. Build it by filtering the unified documents stream
+// for docs with `linked_expense_id` set; see /expenses/+page.svelte.
 export interface ExpenseAttachment extends Attachment {
   expense_id: string;
-}
-
-export function subscribeAllAttachments(
-  onData: (atts: ExpenseAttachment[]) => void,
-  onError?: (err: Error) => void,
-): Unsubscribe {
-  return onSnapshot(
-    collectionGroup(firebaseFirestore(), "attachments"),
-    (snap) => {
-      const out: ExpenseAttachment[] = [];
-      for (const d of snap.docs) {
-        const data = d.data() as SnapData;
-        // `parent.parent` is the expense doc reference; its id is
-        // the expense_id. Defensive: skip orphan docs that somehow
-        // don't have a parent expense (shouldn't happen).
-        const expenseRef = d.ref.parent.parent;
-        if (!expenseRef) continue;
-        out.push({
-          expense_id: expenseRef.id,
-          id: d.id,
-          object_name: String(data.object_name ?? ""),
-          content_type: String(data.content_type ?? ""),
-          size_bytes: Number(data.size_bytes ?? 0),
-          original_filename: String(data.original_filename ?? ""),
-          uploaded_at: isoOf(data.uploaded_at),
-          uploaded_by: String(data.uploaded_by ?? ""),
-        });
-      }
-      out.sort((a, b) => a.uploaded_at.localeCompare(b.uploaded_at));
-      onData(out);
-    },
-    (err) => onError?.(err),
-  );
 }
 
 // ─── Templates ───────────────────────────────────────────────────────
@@ -375,43 +342,68 @@ export function subscribeAlertsForFoyer(
   );
   return onSnapshot(
     q,
-    (snap) => {
-      const rows: Alert[] = [];
-      for (const d of snap.docs) {
-        const data = d.data() as SnapData;
-        const kind = data.kind;
-        if (
-          kind !== "pending_completion" &&
-          kind !== "missing_receipt" &&
-          kind !== "peer_expense_added" &&
-          kind !== "balance_seasonal" &&
-          kind !== "monthly_meter_reading"
-        ) {
-          continue;
-        }
-        rows.push({
-          id: d.id,
-          copro_id: String(data.copro_id ?? ""),
-          kind,
-          recipient_foyer_id: String(data.recipient_foyer_id ?? ""),
-          dedupe_key: String(data.dedupe_key ?? ""),
-          payload:
-            data.payload && typeof data.payload === "object"
-              ? (data.payload as Record<string, unknown>)
-              : undefined,
-          deep_link:
-            typeof data.deep_link === "string" ? data.deep_link : undefined,
-          fired_at: isoOf(data.fired_at),
-          read_at: isoOrUndef(data.read_at),
-          resolved_at: isoOrUndef(data.resolved_at),
-          dismissed_at: isoOrUndef(data.dismissed_at),
-        });
-      }
-      rows.sort((a, b) => b.fired_at.localeCompare(a.fired_at));
-      onData(rows);
-    },
+    (snap) => onData(decodeAlertSnapshot(snap)),
     (err) => onError?.(err),
   );
+}
+
+// subscribeAlerts is the unfiltered fallback used by AlertsBell when
+// the signed-in UID can't be matched to any foyer's member_ids — a
+// data-link state where the foyer-scoped query would always return
+// empty. Same 200-row cap, same filtering. Firestore rules already gate
+// by auth, so this is safe at our 2-foyer scale.
+export function subscribeAlerts(
+  onData: (rows: Alert[]) => void,
+  onError?: (err: Error) => void,
+): Unsubscribe {
+  const q = query(
+    collection(firebaseFirestore(), "alerts"),
+    orderBy("fired_at", "desc"),
+    limit(200),
+  );
+  return onSnapshot(
+    q,
+    (snap) => onData(decodeAlertSnapshot(snap)),
+    (err) => onError?.(err),
+  );
+}
+
+function decodeAlertSnapshot(snap: {
+  docs: ReadonlyArray<QueryDocumentSnapshot>;
+}): Alert[] {
+  const rows: Alert[] = [];
+  for (const d of snap.docs) {
+    const data = d.data() as SnapData;
+    const kind = data.kind;
+    if (
+      kind !== "pending_completion" &&
+      kind !== "missing_receipt" &&
+      kind !== "peer_expense_added" &&
+      kind !== "balance_seasonal" &&
+      kind !== "monthly_meter_reading"
+    ) {
+      continue;
+    }
+    rows.push({
+      id: d.id,
+      copro_id: String(data.copro_id ?? ""),
+      kind,
+      recipient_foyer_id: String(data.recipient_foyer_id ?? ""),
+      dedupe_key: String(data.dedupe_key ?? ""),
+      payload:
+        data.payload && typeof data.payload === "object"
+          ? (data.payload as Record<string, unknown>)
+          : undefined,
+      deep_link:
+        typeof data.deep_link === "string" ? data.deep_link : undefined,
+      fired_at: isoOf(data.fired_at),
+      read_at: isoOrUndef(data.read_at),
+      resolved_at: isoOrUndef(data.resolved_at),
+      dismissed_at: isoOrUndef(data.dismissed_at),
+    });
+  }
+  rows.sort((a, b) => b.fired_at.localeCompare(a.fired_at));
+  return rows;
 }
 
 // ─── Meter readings ──────────────────────────────────────────────────

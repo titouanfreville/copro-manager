@@ -6,11 +6,15 @@ import { api, type Category, type DistributionMode } from "./api";
 export interface CreateCategoryInput {
   name: string;
   default_distribution_mode?: DistributionMode;
+  icon?: string;
+  color?: string;
 }
 
 export interface UpdateCategoryInput {
   name?: string; // ignored server-side for predefined categories
   default_distribution_mode?: DistributionMode;
+  icon?: string;
+  color?: string;
 }
 
 export function createCategory(input: CreateCategoryInput): Promise<Category> {

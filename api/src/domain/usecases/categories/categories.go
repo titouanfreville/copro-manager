@@ -20,6 +20,10 @@ import (
 const (
 	nameMinLen = 2
 	nameMaxLen = 40
+	// iconMaxLen caps the icon string at 8 bytes — wide enough for a
+	// single emoji plus a variation selector (e.g. "💧" or "🏛️" with
+	// VS-16) but tight enough to refuse free-text labels.
+	iconMaxLen = 8
 )
 
 // CreateCategoryInput captures user-typed fields. ID is server-generated.
@@ -27,16 +31,20 @@ type CreateCategoryInput struct {
 	ActorUserID             string
 	Name                    string
 	DefaultDistributionMode entities.DistributionMode
+	Icon                    string
+	Color                   string
 }
 
 // UpdateCategoryInput is for editing an existing category. Predefined
-// categories accept only DefaultDistributionMode; custom categories
-// accept Name + DefaultDistributionMode (the predefined-guard lives in
-// the usecase, not the type).
+// categories accept only DefaultDistributionMode + cosmetic fields
+// (Icon, Color); custom categories accept Name on top. The
+// predefined-guard lives in the usecase, not the type.
 type UpdateCategoryInput struct {
 	ActorUserID             string
 	Name                    string
 	DefaultDistributionMode entities.DistributionMode
+	Icon                    string
+	Color                   string
 }
 
 // Usecases is the categories domain contract.
@@ -95,6 +103,14 @@ func (uc *usecases) Create(ctx context.Context, in CreateCategoryInput) (*entiti
 	if in.DefaultDistributionMode != "" && !entities.IsKnownDistributionMode(in.DefaultDistributionMode) {
 		return nil, entities.ValidationError{Key: "default_distribution_mode", Message: "unknown mode"}
 	}
+	icon, err := normalizeIcon(in.Icon)
+	if err != nil {
+		return nil, err
+	}
+	color, err := normalizeColor(in.Color)
+	if err != nil {
+		return nil, err
+	}
 
 	// Case-insensitive uniqueness check. Listing the full set is fine at
 	// 2-foyer scale (< 30 categories ever). No new index required.
@@ -115,6 +131,8 @@ func (uc *usecases) Create(ctx context.Context, in CreateCategoryInput) (*entiti
 		Predefined:              false,
 		Hidden:                  false,
 		DefaultDistributionMode: in.DefaultDistributionMode,
+		Icon:                    icon,
+		Color:                   color,
 	}
 	if err := uc.store.Create(ctx, c); err != nil {
 		log.Error("store create failed", zap.Error(err))
@@ -141,12 +159,22 @@ func (uc *usecases) Update(ctx context.Context, id string, in UpdateCategoryInpu
 	if in.DefaultDistributionMode != "" && !entities.IsKnownDistributionMode(in.DefaultDistributionMode) {
 		return nil, entities.ValidationError{Key: "default_distribution_mode", Message: "unknown mode"}
 	}
+	icon, err := normalizeIcon(in.Icon)
+	if err != nil {
+		return nil, err
+	}
+	color, err := normalizeColor(in.Color)
+	if err != nil {
+		return nil, err
+	}
 
 	if existing.Predefined {
-		// Only DefaultDistributionMode is mutable on predefined categories
-		// (PRD FR12 — predefined are read-only except for the default).
-		// Name + Hidden stay untouched regardless of the input.
+		// Predefined categories are read-only except for the default
+		// distribution mode (PRD FR12) and the cosmetic icon/color
+		// fields, which the user can tailor without changing identity.
 		existing.DefaultDistributionMode = in.DefaultDistributionMode
+		existing.Icon = icon
+		existing.Color = color
 	} else {
 		name, err := normalizeName(in.Name)
 		if err != nil {
@@ -169,6 +197,8 @@ func (uc *usecases) Update(ctx context.Context, id string, in UpdateCategoryInpu
 		}
 		existing.Name = name
 		existing.DefaultDistributionMode = in.DefaultDistributionMode
+		existing.Icon = icon
+		existing.Color = color
 	}
 
 	if err := uc.store.Update(ctx, *existing); err != nil {
@@ -278,4 +308,39 @@ func normalizeName(raw string) (string, error) {
 		return "", entities.ValidationError{Key: "name", Message: fmt.Sprintf("max %d caractères", nameMaxLen)}
 	}
 	return name, nil
+}
+
+// normalizeIcon trims whitespace and caps the byte length. Empty is
+// allowed and means "use the frontend monogram fallback". The cap stops
+// abusive payloads (full GIF embedded as text, etc.) — emojis stay well
+// under it.
+func normalizeIcon(raw string) (string, error) {
+	icon := strings.TrimSpace(raw)
+	if icon == "" {
+		return "", nil
+	}
+	if len(icon) > iconMaxLen {
+		return "", entities.ValidationError{Key: "icon", Message: fmt.Sprintf("max %d octets", iconMaxLen)}
+	}
+	return icon, nil
+}
+
+// normalizeColor enforces strict `#RRGGBB` hex. Empty is allowed and
+// means "use the frontend predefined-palette fallback". Lowercase is the
+// stored canonical form so display variants merge.
+func normalizeColor(raw string) (string, error) {
+	color := strings.TrimSpace(raw)
+	if color == "" {
+		return "", nil
+	}
+	if len(color) != 7 || color[0] != '#' {
+		return "", entities.ValidationError{Key: "color", Message: "format attendu : #RRGGBB"}
+	}
+	for _, r := range color[1:] {
+		ok := (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')
+		if !ok {
+			return "", entities.ValidationError{Key: "color", Message: "format attendu : #RRGGBB"}
+		}
+	}
+	return strings.ToLower(color), nil
 }
