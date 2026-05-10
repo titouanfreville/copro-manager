@@ -16,12 +16,14 @@ func TestComputeShares(t *testing.T) {
 	now := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
 
 	base := CreateInput{
-		Name:         "Eau été",
-		AmountCents:  10000, // 100€
-		Currency:     "EUR",
-		Date:         now,
-		PayerFoyerID: rdc.ID,
-		CategoryID:   "eau",
+		ExpenseDraft: entities.ExpenseDraft{
+			Name:         "Eau été",
+			AmountCents:  10000, // 100€
+			Currency:     "EUR",
+			Date:         now,
+			PayerFoyerID: rdc.ID,
+			CategoryID:   "eau",
+		},
 	}
 
 	Convey("Given an Equal-mode expense with even amount", t, func() {

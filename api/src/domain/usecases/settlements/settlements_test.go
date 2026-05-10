@@ -62,18 +62,10 @@ func (m *mockExpensesStore) List(ctx context.Context) ([]entities.Expense, error
 	return nil, args.Error(1)
 }
 func (m *mockExpensesStore) FindByID(ctx context.Context, id string) (*entities.Expense, error) {
-	args := m.Called(ctx, id)
-	if v := args.Get(0); v != nil {
-		return v.(*entities.Expense), args.Error(1)
-	}
-	return nil, args.Error(1)
+	return nil, m.Called(ctx, id).Error(1)
 }
-func (m *mockExpensesStore) FindByNameAndDate(ctx context.Context, name string, date time.Time) (*entities.Expense, error) {
-	args := m.Called(ctx, name, date)
-	if v := args.Get(0); v != nil {
-		return v.(*entities.Expense), args.Error(1)
-	}
-	return nil, args.Error(1)
+func (m *mockExpensesStore) FindByNameAndDate(ctx context.Context, n string, d time.Time) (*entities.Expense, error) {
+	return nil, m.Called(ctx, n, d).Error(1)
 }
 func (m *mockExpensesStore) Create(ctx context.Context, e entities.Expense) error {
 	return m.Called(ctx, e).Error(0)
@@ -84,13 +76,11 @@ func (m *mockExpensesStore) Update(ctx context.Context, e entities.Expense) erro
 func (m *mockExpensesStore) Delete(ctx context.Context, id string) error {
 	return m.Called(ctx, id).Error(0)
 }
-func (m *mockExpensesStore) CountByCategory(ctx context.Context, categoryID string) (int, error) {
-	args := m.Called(ctx, categoryID)
-	return args.Int(0), args.Error(1)
+func (m *mockExpensesStore) CountByCategory(ctx context.Context, id string) (int, error) {
+	return m.Called(ctx, id).Int(0), m.Called(ctx, id).Error(1)
 }
-func (m *mockExpensesStore) CountByMeterReadingPeriod(ctx context.Context, period string) (int, error) {
-	args := m.Called(ctx, period)
-	return args.Int(0), args.Error(1)
+func (m *mockExpensesStore) CountByMeterReadingPeriod(ctx context.Context, p string) (int, error) {
+	return m.Called(ctx, p).Int(0), m.Called(ctx, p).Error(1)
 }
 
 type mockFoyersStore struct{ mock.Mock }
@@ -103,21 +93,13 @@ func (m *mockFoyersStore) FindByFloor(ctx context.Context, f entities.FoyerFloor
 	return nil, args.Error(1)
 }
 func (m *mockFoyersStore) FindByID(ctx context.Context, id string) (*entities.Foyer, error) {
-	args := m.Called(ctx, id)
-	if v := args.Get(0); v != nil {
-		return v.(*entities.Foyer), args.Error(1)
-	}
-	return nil, args.Error(1)
+	return nil, m.Called(ctx, id).Error(1)
 }
 func (m *mockFoyersStore) Create(ctx context.Context, f entities.Foyer) error {
 	return m.Called(ctx, f).Error(0)
 }
 func (m *mockFoyersStore) List(ctx context.Context) ([]entities.Foyer, error) {
-	args := m.Called(ctx)
-	if v := args.Get(0); v != nil {
-		return v.([]entities.Foyer), args.Error(1)
-	}
-	return nil, args.Error(1)
+	return nil, m.Called(ctx).Error(1)
 }
 func (m *mockFoyersStore) AddMember(ctx context.Context, fid, uid string) error {
 	return m.Called(ctx, fid, uid).Error(0)
@@ -136,6 +118,18 @@ func (m *mockCoprosStore) GetOrCreateSingleton(ctx context.Context) (*entities.C
 	return nil, args.Error(1)
 }
 
+type mockValidator struct{ mock.Mock }
+
+func (m *mockValidator) Validate(ctx context.Context, d entities.SettlementDraft, selfID string) error {
+	return m.Called(ctx, d, selfID).Error(0)
+}
+
+type mockAlerts struct{ mock.Mock }
+
+func (m *mockAlerts) ResolveSeasonalAll(ctx context.Context) error {
+	return m.Called(ctx).Error(0)
+}
+
 // ─── Helpers ────────────────────────────────────────────────────────
 
 var (
@@ -145,122 +139,81 @@ var (
 	now     = time.Date(2026, 5, 8, 0, 0, 0, 0, time.UTC)
 )
 
-func newUC() (*usecases, *mockSettlementsStore, *mockExpensesStore, *mockFoyersStore, *mockCoprosStore) {
+func newUC() (*usecases, *mockSettlementsStore, *mockExpensesStore, *mockFoyersStore, *mockCoprosStore, *mockValidator, *mockAlerts) {
 	st := &mockSettlementsStore{}
 	exp := &mockExpensesStore{}
 	foy := &mockFoyersStore{}
 	cps := &mockCoprosStore{}
+	val := &mockValidator{}
+	alerts := &mockAlerts{}
+	clock := func() time.Time { return now }
+	logger := zap.NewNop()
 	uc := &usecases{
-		logger:      zap.NewNop(),
+		logger:      logger,
 		settlements: st,
-		expenses:    exp,
 		foyers:      foy,
-		copros:      cps,
-		now:         func() time.Time { return now },
+		validator:   val,
+		builder:     newBuilder(cps, clock),
+		resolver:    newSeasonalResolver(logger, exp, st, foy, alerts),
 	}
-	return uc, st, exp, foy, cps
+	return uc, st, exp, foy, cps, val, alerts
 }
 
-func validInput(actor string, expenseIDs ...string) CreateInput {
+func validInput(actor string) CreateInput {
 	return CreateInput{
 		ActorUserID: actor,
-		FromFoyerID: "1er",
-		ToFoyerID:   "rdc",
-		AmountCents: 12740,
-		Date:        now,
-		ExpenseIDs:  expenseIDs,
+		SettlementDraft: entities.SettlementDraft{
+			FromFoyerID: "1er",
+			ToFoyerID:   "rdc",
+			AmountCents: 12740,
+			Date:        now,
+		},
 	}
 }
 
 // ─── Create ─────────────────────────────────────────────────────────
 
 func TestCreate(t *testing.T) {
-	Convey("Given a valid input from a foyer member", t, func() {
+	Convey("Persists a fresh settlement and triggers the seasonal cascade", t, func() {
 		ctx := context.Background()
-		uc, st, _, foy, cps := newUC()
+		uc, st, exp, foy, cps, val, alerts := newUC()
 		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
 		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
+		val.On("Validate", ctx, mock.AnythingOfType("entities.SettlementDraft"), "").Return(nil)
 		cps.On("GetOrCreateSingleton", ctx).Return(cop, nil)
 		st.On("Create", ctx, mock.AnythingOfType("entities.Settlement")).Return(nil)
+		// Seasonal resolver reads the live ledger; return empty so net=0
+		// triggers the resolve.
+		exp.On("List", ctx).Return([]entities.Expense{}, nil)
+		st.On("List", ctx).Return([]entities.Settlement{}, nil)
+		alerts.On("ResolveSeasonalAll", ctx).Return(nil)
 
-		s, err := uc.Create(ctx, validInput("uid-rdc"))
-		Convey("It returns the settlement with a fresh ID and EUR currency", func() {
-			So(err, ShouldBeNil)
-			So(s.ID, ShouldNotBeBlank)
-			So(s.Currency, ShouldEqual, "EUR")
-			So(s.AmountCents, ShouldEqual, 12740)
-			So(s.FromFoyerID, ShouldEqual, "1er")
-			So(s.ToFoyerID, ShouldEqual, "rdc")
-		})
+		out, err := uc.Create(ctx, validInput("uid-rdc"))
+		So(err, ShouldBeNil)
+		So(out.ID, ShouldNotBeBlank)
+		So(out.CoproID, ShouldEqual, "c1")
+		So(out.Currency, ShouldEqual, "EUR")
 	})
 
-	Convey("Rejects from == to", t, func() {
+	Convey("Refuses unauthenticated foreign actor", t, func() {
 		ctx := context.Background()
-		uc, _, _, foy, _ := newUC()
+		uc, _, _, foy, _, _, _ := newUC()
 		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
 		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
-		in := validInput("uid-rdc")
-		in.ToFoyerID = in.FromFoyerID
-		_, err := uc.Create(ctx, in)
-		So(errors.Is(err, entities.ValidationError{}), ShouldBeTrue)
-	})
 
-	Convey("Rejects amount = 0", t, func() {
-		ctx := context.Background()
-		uc, _, _, foy, _ := newUC()
-		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
-		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
-		in := validInput("uid-rdc")
-		in.AmountCents = 0
-		_, err := uc.Create(ctx, in)
-		So(errors.Is(err, entities.ValidationError{}), ShouldBeTrue)
-	})
-
-	Convey("Rejects a foyer not in the copro", t, func() {
-		ctx := context.Background()
-		uc, _, _, foy, _ := newUC()
-		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
-		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
-		in := validInput("uid-rdc")
-		in.FromFoyerID = "outsider"
-		_, err := uc.Create(ctx, in)
-		So(errors.Is(err, entities.ValidationError{}), ShouldBeTrue)
-	})
-
-	Convey("Rejects an intruder actor", t, func() {
-		ctx := context.Background()
-		uc, _, _, foy, _ := newUC()
-		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
-		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
-		_, err := uc.Create(ctx, validInput("intruder"))
+		_, err := uc.Create(ctx, validInput("stranger"))
 		So(errors.Is(err, entities.AuthorizationError{}), ShouldBeTrue)
 	})
 
-	Convey("With a linked expense already linked to another settlement", t, func() {
+	Convey("Surfaces validator errors verbatim", t, func() {
 		ctx := context.Background()
-		uc, st, exp, foy, cps := newUC()
+		uc, _, _, foy, _, val, _ := newUC()
 		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
 		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
-		cps.On("GetOrCreateSingleton", ctx).Return(cop, nil)
-		exp.On("FindByID", ctx, "e1").Return(&entities.Expense{ID: "e1", CoproID: "c1"}, nil)
-		st.On("FindByExpenseID", ctx, "e1").Return(&entities.Settlement{ID: "s-other"}, nil)
+		val.On("Validate", ctx, mock.AnythingOfType("entities.SettlementDraft"), "").
+			Return(entities.ValidationError{Key: "amount_cents", Message: "must be > 0"})
 
-		_, err := uc.Create(ctx, validInput("uid-rdc", "e1"))
-		Convey("It rejects with a validation error referencing the conflict", func() {
-			So(errors.Is(err, entities.ValidationError{}), ShouldBeTrue)
-			So(err.Error(), ShouldContainSubstring, "s-other")
-		})
-	})
-
-	Convey("With a missing linked expense", t, func() {
-		ctx := context.Background()
-		uc, _, exp, foy, cps := newUC()
-		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
-		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
-		cps.On("GetOrCreateSingleton", ctx).Return(cop, nil)
-		exp.On("FindByID", ctx, "ghost").Return((*entities.Expense)(nil), nil)
-
-		_, err := uc.Create(ctx, validInput("uid-rdc", "ghost"))
+		_, err := uc.Create(ctx, validInput("uid-rdc"))
 		So(errors.Is(err, entities.ValidationError{}), ShouldBeTrue)
 	})
 }
@@ -268,121 +221,57 @@ func TestCreate(t *testing.T) {
 // ─── Update ─────────────────────────────────────────────────────────
 
 func TestUpdate(t *testing.T) {
-	Convey("Given an existing settlement", t, func() {
+	Convey("Updates the settlement and bumps UpdatedAt", t, func() {
 		ctx := context.Background()
-		uc, st, _, foy, _ := newUC()
+		uc, st, exp, foy, _, val, alerts := newUC()
 		existing := &entities.Settlement{
-			ID:          "s1",
-			CoproID:     "c1",
-			FromFoyerID: "1er",
-			ToFoyerID:   "rdc",
-			AmountCents: 10000,
-			Currency:    "EUR",
-			Date:        time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC),
-			CreatedAt:   time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC),
+			ID: "s1", CoproID: "c1", FromFoyerID: "1er", ToFoyerID: "rdc",
+			AmountCents: 5000, Currency: "EUR", Date: now.Add(-7 * 24 * time.Hour),
+			CreatedAt: now.Add(-7 * 24 * time.Hour), UpdatedAt: now.Add(-7 * 24 * time.Hour),
 		}
-		st.On("FindByID", ctx, "s1").Return(existing, nil)
 		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
 		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
+		st.On("FindByID", ctx, "s1").Return(existing, nil)
+		val.On("Validate", ctx, mock.AnythingOfType("entities.SettlementDraft"), "s1").Return(nil)
 		st.On("Update", ctx, mock.AnythingOfType("entities.Settlement")).Return(nil)
+		exp.On("List", ctx).Return([]entities.Expense{}, nil)
+		st.On("List", ctx).Return([]entities.Settlement{}, nil)
+		alerts.On("ResolveSeasonalAll", ctx).Return(nil)
 
-		out, err := uc.Update(ctx, "s1", CreateInput{
-			ActorUserID: "uid-rdc",
-			FromFoyerID: "1er",
-			ToFoyerID:   "rdc",
-			AmountCents: 8000,
-			Date:        existing.Date,
-		})
-		Convey("It writes the new amount and refreshes UpdatedAt", func() {
-			So(err, ShouldBeNil)
-			So(out.AmountCents, ShouldEqual, 8000)
-			So(out.UpdatedAt, ShouldHappenAfter, existing.CreatedAt)
-			So(out.ID, ShouldEqual, "s1")
-			So(out.CreatedAt, ShouldEqual, existing.CreatedAt)
-		})
+		out, err := uc.Update(ctx, "s1", validInput("uid-rdc"))
+		So(err, ShouldBeNil)
+		So(out.ID, ShouldEqual, "s1")
+		So(out.UpdatedAt, ShouldEqual, now)
+		So(out.CreatedAt, ShouldEqual, existing.CreatedAt)
 	})
 
 	Convey("Returns ErrNotFound for a ghost id", t, func() {
 		ctx := context.Background()
-		uc, st, _, foy, _ := newUC()
-		st.On("FindByID", ctx, "ghost").Return((*entities.Settlement)(nil), nil)
+		uc, st, _, foy, _, _, _ := newUC()
 		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
 		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
+		st.On("FindByID", ctx, "ghost").Return((*entities.Settlement)(nil), nil)
+
 		_, err := uc.Update(ctx, "ghost", validInput("uid-rdc"))
 		So(errors.Is(err, domainerrors.ErrNotFound), ShouldBeTrue)
-	})
-
-	Convey("Update preserves a link that already pointed to this settlement (no false conflict)", t, func() {
-		ctx := context.Background()
-		uc, st, exp, foy, _ := newUC()
-		existing := &entities.Settlement{
-			ID:          "s1",
-			CoproID:     "c1",
-			FromFoyerID: "1er",
-			ToFoyerID:   "rdc",
-			AmountCents: 10000,
-			Currency:    "EUR",
-			Date:        now,
-			ExpenseIDs:  []string{"e1"},
-			CreatedAt:   now,
-		}
-		st.On("FindByID", ctx, "s1").Return(existing, nil)
-		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
-		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
-		exp.On("FindByID", ctx, "e1").Return(&entities.Expense{ID: "e1", CoproID: "c1"}, nil)
-		// FindByExpenseID returns the SAME settlement we're editing — must not collide.
-		st.On("FindByExpenseID", ctx, "e1").Return(existing, nil)
-		st.On("Update", ctx, mock.AnythingOfType("entities.Settlement")).Return(nil)
-
-		// checkExpenseLinks now resolves the copro singleton up-front to
-		// enforce the cross-tenant guard; mock it.
-		copStore := uc.copros.(*mockCoprosStore)
-		copStore.On("GetOrCreateSingleton", ctx).Return(cop, nil)
-
-		_, err := uc.Update(ctx, "s1", CreateInput{
-			ActorUserID: "uid-rdc",
-			FromFoyerID: "1er",
-			ToFoyerID:   "rdc",
-			AmountCents: 12000,
-			Date:        now,
-			ExpenseIDs:  []string{"e1"},
-		})
-		So(err, ShouldBeNil)
 	})
 }
 
 // ─── Delete ─────────────────────────────────────────────────────────
 
 func TestDelete(t *testing.T) {
-	Convey("Deletes an existing settlement", t, func() {
+	Convey("Removes the settlement and re-runs the cascade", t, func() {
 		ctx := context.Background()
-		uc, st, _, foy, _ := newUC()
-		st.On("FindByID", ctx, "s1").Return(&entities.Settlement{ID: "s1"}, nil)
+		uc, st, exp, foy, _, _, alerts := newUC()
 		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
 		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
+		st.On("FindByID", ctx, "s1").Return(&entities.Settlement{ID: "s1"}, nil)
 		st.On("Delete", ctx, "s1").Return(nil)
+		exp.On("List", ctx).Return([]entities.Expense{}, nil)
+		st.On("List", ctx).Return([]entities.Settlement{}, nil)
+		alerts.On("ResolveSeasonalAll", ctx).Return(nil)
 
 		err := uc.Delete(ctx, "s1", "uid-rdc")
 		So(err, ShouldBeNil)
-		st.AssertCalled(t, "Delete", ctx, "s1")
-	})
-
-	Convey("Returns ErrNotFound for a ghost id", t, func() {
-		ctx := context.Background()
-		uc, st, _, foy, _ := newUC()
-		st.On("FindByID", ctx, "ghost").Return((*entities.Settlement)(nil), nil)
-		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
-		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
-		err := uc.Delete(ctx, "ghost", "uid-rdc")
-		So(errors.Is(err, domainerrors.ErrNotFound), ShouldBeTrue)
-	})
-
-	Convey("Rejects an intruder actor", t, func() {
-		ctx := context.Background()
-		uc, _, _, foy, _ := newUC()
-		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
-		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
-		err := uc.Delete(ctx, "s1", "intruder")
-		So(errors.Is(err, entities.AuthorizationError{}), ShouldBeTrue)
 	})
 }

@@ -44,10 +44,9 @@ type contractRequest struct {
 }
 
 func (req contractRequest) toInput(actorUID string) (contracts.CreateInput, error) {
-	in := contracts.CreateInput{
-		ActorUserID: actorUID,
-		Name:        req.Name,
-		CategoryID:  req.CategoryID,
+	draft := entities.ContractDraft{
+		Name:       req.Name,
+		CategoryID: req.CategoryID,
 		Society: entities.Society{
 			Name:    req.Society.Name,
 			Phone:   req.Society.Phone,
@@ -70,18 +69,18 @@ func (req contractRequest) toInput(actorUID string) (contracts.CreateInput, erro
 	if req.StartDate != "" {
 		t, err := parseDateOnly(req.StartDate)
 		if err != nil {
-			return in, entities.ValidationError{Key: "start_date", Message: "format attendu : YYYY-MM-DD"}
+			return contracts.CreateInput{}, entities.ValidationError{Key: "start_date", Message: "format attendu : YYYY-MM-DD"}
 		}
-		in.StartDate = t
+		draft.StartDate = t
 	}
 	if req.EndDate != "" {
 		t, err := parseDateOnly(req.EndDate)
 		if err != nil {
-			return in, entities.ValidationError{Key: "end_date", Message: "format attendu : YYYY-MM-DD"}
+			return contracts.CreateInput{}, entities.ValidationError{Key: "end_date", Message: "format attendu : YYYY-MM-DD"}
 		}
-		in.EndDate = t
+		draft.EndDate = t
 	}
-	return in, nil
+	return contracts.CreateInput{ActorUserID: actorUID, ContractDraft: draft}, nil
 }
 
 // parseDateOnly accepts the strict YYYY-MM-DD form (matches the

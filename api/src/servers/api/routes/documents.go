@@ -82,15 +82,17 @@ func (e *Endpoints) RequestDocumentUploadURL(w http.ResponseWriter, r *http.Requ
 	actorUID, _ := r.Context().Value(shared.UserID).(string)
 
 	result, err := e.usecases.Documents.RequestUploadURL(r.Context(), documents.RequestUploadInput{
-		ActorUserID:      actorUID,
-		Title:            req.Title,
-		Description:      req.Description,
-		CategoryID:       req.CategoryID,
-		Group:            req.Group,
-		OriginalFilename: req.OriginalFilename,
-		ContentType:      req.ContentType,
-		SizeBytes:        req.SizeBytes,
-		LinkedContractID: req.LinkedContractID,
+		ActorUserID: actorUID,
+		DocumentDraft: entities.DocumentDraft{
+			Title:            req.Title,
+			Description:      req.Description,
+			CategoryID:       req.CategoryID,
+			Group:            req.Group,
+			OriginalFilename: req.OriginalFilename,
+			ContentType:      req.ContentType,
+			SizeBytes:        req.SizeBytes,
+			LinkedContractID: req.LinkedContractID,
+		},
 	})
 	if err != nil {
 		status, body := routeerrors.ManageErrors(err)
@@ -116,16 +118,18 @@ func (e *Endpoints) RecordDocument(w http.ResponseWriter, r *http.Request) {
 	actorUID, _ := r.Context().Value(shared.UserID).(string)
 
 	d, err := e.usecases.Documents.Record(r.Context(), documents.RecordDocumentInput{
-		ActorUserID:      actorUID,
-		DocumentID:       req.DocumentID,
-		Title:            req.Title,
-		Description:      req.Description,
-		CategoryID:       req.CategoryID,
-		Group:            req.Group,
-		ContentType:      req.ContentType,
-		SizeBytes:        req.SizeBytes,
-		OriginalFilename: req.OriginalFilename,
-		LinkedContractID: req.LinkedContractID,
+		ActorUserID: actorUID,
+		DocumentID:  req.DocumentID,
+		DocumentDraft: entities.DocumentDraft{
+			Title:            req.Title,
+			Description:      req.Description,
+			CategoryID:       req.CategoryID,
+			Group:            req.Group,
+			ContentType:      req.ContentType,
+			SizeBytes:        req.SizeBytes,
+			OriginalFilename: req.OriginalFilename,
+			LinkedContractID: req.LinkedContractID,
+		},
 	})
 	if err != nil {
 		status, body := routeerrors.ManageErrors(err)
@@ -150,12 +154,14 @@ func (e *Endpoints) UpdateDocument(w http.ResponseWriter, r *http.Request) {
 	actorUID, _ := r.Context().Value(shared.UserID).(string)
 
 	d, err := e.usecases.Documents.Update(r.Context(), id, documents.UpdateDocumentInput{
-		ActorUserID:      actorUID,
-		Title:            req.Title,
-		Description:      req.Description,
-		CategoryID:       req.CategoryID,
-		Group:            req.Group,
-		LinkedContractID: req.LinkedContractID,
+		ActorUserID: actorUID,
+		DocumentMetadataDraft: entities.DocumentMetadataDraft{
+			Title:            req.Title,
+			Description:      req.Description,
+			CategoryID:       req.CategoryID,
+			Group:            req.Group,
+			LinkedContractID: req.LinkedContractID,
+		},
 	})
 	if err != nil {
 		status, body := routeerrors.ManageErrors(err)

@@ -12,36 +12,14 @@ const AttachmentMaxSizeBytes int64 = 10 * 1024 * 1024
 // through onSnapshot.
 const AttachmentMaxPerExpense = 10
 
-// AllowedAttachmentMimeTypes is the canonical MIME whitelist. Anything else
-// is rejected before a signed URL is issued. Map values are the file
-// extension we use when minting the GCS object key. HEIC/HEIF are
-// intentionally excluded: the SvelteKit client converts iPhone HEIC
-// uploads to JPEG via prepareForUpload before issuing the signed URL,
-// and the chrome-desktop bitmap fallback path now fails fast rather
-// than upload mismatched bytes.
-var AllowedAttachmentMimeTypes = map[string]string{
-	"image/jpeg":      ".jpg",
-	"image/png":       ".png",
-	"application/pdf": ".pdf",
-}
-
-// IsAllowedAttachmentMime reports whether the supplied content-type is in
-// the whitelist.
-func IsAllowedAttachmentMime(mime string) bool {
-	_, ok := AllowedAttachmentMimeTypes[mime]
-	return ok
-}
-
-// AttachmentExtension returns the canonical extension for a whitelisted
-// MIME type, or "" if unknown.
-func AttachmentExtension(mime string) string {
-	return AllowedAttachmentMimeTypes[mime]
-}
-
 // Attachment is a single uploaded document tied to an expense. The blob
 // itself lives in GCS at ObjectName; this struct is metadata stored inline
 // on the expense doc (Firestore array). Reads are auth-gated by the same
 // Firestore rules as the parent expense doc; writes go through the API.
+//
+// The MIME whitelist for uploads lives in core/rest — content-type is
+// part of the HTTP boundary's vocabulary, not a business invariant of
+// the Attachment entity.
 type Attachment struct {
 	ID               string    `json:"id"`
 	ObjectName       string    `json:"object_name"`

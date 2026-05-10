@@ -120,3 +120,26 @@ type ExpenseTemplate struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
+
+// ExpenseTemplateDraft is the user-editable subset for Create/Update.
+// Server-owned fields (ID, CoproID, NextOccurrenceAt, CreatedAt,
+// UpdatedAt) are stamped at build time. StartDate is the first-fire
+// anchor for scheduled templates — the builder converts it to
+// NextOccurrenceAt on the persisted entity.
+type ExpenseTemplateDraft struct {
+	Name               string
+	AmountDefaultCents int
+	Currency           string
+	CategoryID         string
+	PayerFoyerID       string
+	DistributionMode   DistributionMode
+	ShareRDCCents      int
+	Share1erCents      int
+	Note               string
+
+	ScheduleActive bool
+	Frequency      Frequency
+	DayOfMonth     int
+	StartDate      time.Time
+	EndDate        *time.Time
+}

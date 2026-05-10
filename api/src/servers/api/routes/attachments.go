@@ -87,11 +87,13 @@ func (e *Endpoints) RequestAttachmentUploadURL(w http.ResponseWriter, r *http.Re
 	actorUID, _ := r.Context().Value(shared.UserID).(string)
 
 	result, err := e.usecases.Documents.RequestUploadURL(r.Context(), documents.RequestUploadInput{
-		ActorUserID:      actorUID,
-		OriginalFilename: req.OriginalFilename,
-		ContentType:      req.ContentType,
-		SizeBytes:        req.SizeBytes,
-		LinkedExpenseID:  expenseID,
+		ActorUserID: actorUID,
+		DocumentDraft: entities.DocumentDraft{
+			OriginalFilename: req.OriginalFilename,
+			ContentType:      req.ContentType,
+			SizeBytes:        req.SizeBytes,
+			LinkedExpenseID:  expenseID,
+		},
 	})
 	if err != nil {
 		status, body := routeerrors.ManageErrors(err)
@@ -127,12 +129,14 @@ func (e *Endpoints) RecordAttachment(w http.ResponseWriter, r *http.Request) {
 	actorUID, _ := r.Context().Value(shared.UserID).(string)
 
 	d, err := e.usecases.Documents.Record(r.Context(), documents.RecordDocumentInput{
-		ActorUserID:      actorUID,
-		DocumentID:       req.AttachmentID,
-		ContentType:      req.ContentType,
-		SizeBytes:        req.SizeBytes,
-		OriginalFilename: req.OriginalFilename,
-		LinkedExpenseID:  expenseID,
+		ActorUserID: actorUID,
+		DocumentID:  req.AttachmentID,
+		DocumentDraft: entities.DocumentDraft{
+			ContentType:      req.ContentType,
+			SizeBytes:        req.SizeBytes,
+			OriginalFilename: req.OriginalFilename,
+			LinkedExpenseID:  expenseID,
+		},
 	})
 	if err != nil {
 		status, body := routeerrors.ManageErrors(err)

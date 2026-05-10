@@ -10,21 +10,23 @@ import (
 	"go.uber.org/fx"
 	uberzap "go.uber.org/zap"
 
-	alertsadapter "github.com/titouanfreville/copro-manager/api/src/adapters/alerts"
 	authadapter "github.com/titouanfreville/copro-manager/api/src/adapters/auth"
-	categoriesadapter "github.com/titouanfreville/copro-manager/api/src/adapters/categories"
-	contractsadapter "github.com/titouanfreville/copro-manager/api/src/adapters/contracts"
-	coprosadapter "github.com/titouanfreville/copro-manager/api/src/adapters/copros"
-	documentsadapter "github.com/titouanfreville/copro-manager/api/src/adapters/documents"
-	expensesadapter "github.com/titouanfreville/copro-manager/api/src/adapters/expenses"
-	foyersadapter "github.com/titouanfreville/copro-manager/api/src/adapters/foyers"
-	metersadapter "github.com/titouanfreville/copro-manager/api/src/adapters/meters"
-	pushadapter "github.com/titouanfreville/copro-manager/api/src/adapters/push"
-	settlementsadapter "github.com/titouanfreville/copro-manager/api/src/adapters/settlements"
-	templatesadapter "github.com/titouanfreville/copro-manager/api/src/adapters/templates"
-	usersadapter "github.com/titouanfreville/copro-manager/api/src/adapters/users"
-	visionusageadapter "github.com/titouanfreville/copro-manager/api/src/adapters/visionusage"
+	alertsstore "github.com/titouanfreville/copro-manager/api/src/adapters/store/alerts"
+	categoriesstore "github.com/titouanfreville/copro-manager/api/src/adapters/store/categories"
+	contractsstore "github.com/titouanfreville/copro-manager/api/src/adapters/store/contracts"
+	coprosstore "github.com/titouanfreville/copro-manager/api/src/adapters/store/copros"
+	documentsstore "github.com/titouanfreville/copro-manager/api/src/adapters/store/documents"
+	expensesstore "github.com/titouanfreville/copro-manager/api/src/adapters/store/expenses"
+	foyersstore "github.com/titouanfreville/copro-manager/api/src/adapters/store/foyers"
+	metersstore "github.com/titouanfreville/copro-manager/api/src/adapters/store/meters"
+	pushstore "github.com/titouanfreville/copro-manager/api/src/adapters/store/push"
+	settlementsstore "github.com/titouanfreville/copro-manager/api/src/adapters/store/settlements"
+	templatesstore "github.com/titouanfreville/copro-manager/api/src/adapters/store/templates"
+	usersstore "github.com/titouanfreville/copro-manager/api/src/adapters/store/users"
+	visionusagestore "github.com/titouanfreville/copro-manager/api/src/adapters/store/visionusage"
+	validatorsadapter "github.com/titouanfreville/copro-manager/api/src/adapters/validators"
 	"github.com/titouanfreville/copro-manager/api/src/core/config"
+	"github.com/titouanfreville/copro-manager/api/src/domain/entities"
 	"github.com/titouanfreville/copro-manager/api/src/domain/interfaces"
 	"github.com/titouanfreville/copro-manager/api/src/domain/usecases"
 	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/alerts"
@@ -94,7 +96,7 @@ func main() {
 			),
 
 			fx.Annotate(
-				visionusageadapter.NewStore,
+				visionusagestore.NewStore,
 				fx.As(new(interfaces.VisionUsageStore)),
 			),
 			fx.Annotate(
@@ -117,19 +119,24 @@ func main() {
 			firebase.NewAuthClient,
 			firebase.NewAdminClient,
 
-			fx.Annotate(foyersadapter.NewStore, fx.As(new(interfaces.FoyersStore))),
-			fx.Annotate(coprosadapter.NewStore, fx.As(new(interfaces.CoprosStore))),
-			fx.Annotate(usersadapter.NewStore, fx.As(new(interfaces.UsersStore))),
-			fx.Annotate(categoriesadapter.NewStore, fx.As(new(interfaces.CategoriesStore))),
-			fx.Annotate(expensesadapter.NewStore, fx.As(new(interfaces.ExpensesStore))),
-			fx.Annotate(expensesadapter.NewAttachmentsStore, fx.As(new(interfaces.AttachmentsStore))),
-			fx.Annotate(templatesadapter.NewStore, fx.As(new(interfaces.TemplatesStore))),
-			fx.Annotate(settlementsadapter.NewStore, fx.As(new(interfaces.SettlementsStore))),
-			fx.Annotate(documentsadapter.NewStore, fx.As(new(interfaces.DocumentsStore))),
-			fx.Annotate(contractsadapter.NewStore, fx.As(new(interfaces.ContractsStore))),
-			fx.Annotate(alertsadapter.NewStore, fx.As(new(interfaces.AlertsStore))),
-			fx.Annotate(pushadapter.NewStore, fx.As(new(interfaces.PushSubscriptionsStore))),
-			fx.Annotate(metersadapter.NewStore, fx.As(new(interfaces.MetersStore))),
+			fx.Annotate(foyersstore.NewStore, fx.As(new(interfaces.FoyersStore))),
+			fx.Annotate(coprosstore.NewStore, fx.As(new(interfaces.CoprosStore))),
+			fx.Annotate(usersstore.NewStore, fx.As(new(interfaces.UsersStore))),
+			fx.Annotate(categoriesstore.NewStore, fx.As(new(interfaces.CategoriesStore))),
+			fx.Annotate(expensesstore.NewStore, fx.As(new(interfaces.ExpensesStore))),
+			fx.Annotate(expensesstore.NewAttachmentsStore, fx.As(new(interfaces.AttachmentsStore))),
+			fx.Annotate(templatesstore.NewStore, fx.As(new(interfaces.TemplatesStore))),
+			fx.Annotate(settlementsstore.NewStore, fx.As(new(interfaces.SettlementsStore))),
+			fx.Annotate(documentsstore.NewStore, fx.As(new(interfaces.DocumentsStore))),
+			fx.Annotate(contractsstore.NewStore, fx.As(new(interfaces.ContractsStore))),
+			fx.Annotate(alertsstore.NewStore, fx.As(new(interfaces.AlertsStore))),
+			fx.Annotate(pushstore.NewStore, fx.As(new(interfaces.PushSubscriptionsStore))),
+			fx.Annotate(metersstore.NewStore, fx.As(new(interfaces.MetersStore))),
+			fx.Annotate(validatorsadapter.NewContracts, fx.As(new(interfaces.ContractValidator))),
+			fx.Annotate(validatorsadapter.NewDocuments, fx.As(new(interfaces.DocumentValidator))),
+			fx.Annotate(validatorsadapter.NewSettlements, fx.As(new(interfaces.SettlementValidator))),
+			fx.Annotate(validatorsadapter.NewTemplates, fx.As(new(interfaces.TemplateValidator))),
+			fx.Annotate(validatorsadapter.NewExpenses, fx.As(new(interfaces.ExpenseValidator))),
 			fx.Annotate(authadapter.NewFirebaseProvisioner, fx.As(new(interfaces.AuthProvisioner))),
 
 			home.New,
@@ -147,6 +154,13 @@ func main() {
 			func(a alerts.Usecases) meters.AlertsHook { return a },
 			func(d documents.Usecases) expenses.DocumentsHook { return d },
 			func(a alerts.Usecases) contracts.AlertsHook { return a },
+			// Bridge expenses.Usecases → templates.ExpensesHook so the
+			// templates package stays a leaf (no usecase-to-usecase
+			// import). The hook accepts a draft; we build a CreateInput
+			// here at the composition root.
+			func(e expenses.Usecases) templates.ExpensesHook {
+				return &templatesExpensesAdapter{u: e}
+			},
 			expenses.New,
 			templates.New,
 			settlements.New,
@@ -190,7 +204,7 @@ func main() {
 			func(client *fs.Client, logger *uberzap.Logger) {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 				defer cancel()
-				if err := documentsadapter.MigrateAttachmentsToDocuments(ctx, client, logger); err != nil {
+				if err := documentsstore.MigrateAttachmentsToDocuments(ctx, client, logger); err != nil {
 					logger.Named("bootstrap").Warn("attachments→documents migration failed (continuing)", uberzap.Error(err))
 				}
 			},
@@ -201,4 +215,14 @@ func main() {
 	fxapp.Start(app, timeout)
 	<-app.Done()
 	fxapp.Shutdown(app, timeout)
+}
+
+// templatesExpensesAdapter bridges the wide expenses.Usecases to the
+// narrow templates.ExpensesHook so the templates package doesn't have
+// to import the expenses package. Lives here at the composition root
+// rather than in either domain — both packages stay leaves.
+type templatesExpensesAdapter struct{ u expenses.Usecases }
+
+func (a *templatesExpensesAdapter) Create(ctx context.Context, d entities.ExpenseDraft) (*entities.Expense, error) {
+	return a.u.Create(ctx, expenses.CreateInput{ExpenseDraft: d})
 }

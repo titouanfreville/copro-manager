@@ -59,23 +59,8 @@ func (e *Endpoints) CreateExpense(w http.ResponseWriter, r *http.Request) {
 	actorUID, _ := r.Context().Value(shared.UserID).(string)
 
 	exp, err := e.usecases.Expenses.Create(r.Context(), expenses.CreateInput{
-		ActorUserID:        actorUID,
-		Name:               req.Name,
-		AmountCents:        req.AmountCents,
-		Currency:           req.Currency,
-		Date:               date,
-		PaymentDate:        paymentDate,
-		PayerFoyerID:       req.PayerFoyerID,
-		CategoryID:         req.CategoryID,
-		DistributionMode:   entities.DistributionMode(req.DistributionMode),
-		ShareRDCCents:      req.ShareRDCCents,
-		Share1erCents:      req.Share1erCents,
-		Settled:            req.Settled,
-		SettledAt:          settledAt,
-		Note:               req.Note,
-		TemplateID:         req.TemplateID,
-		AmountPending:      req.AmountPending,
-		MeterReadingPeriod: req.MeterReadingPeriod,
+		ActorUserID:  actorUID,
+		ExpenseDraft: draftFromCreateRequest(req, date, paymentDate, settledAt),
 	})
 	if err != nil {
 		status, body := routeerrors.ManageErrors(err)
@@ -119,23 +104,8 @@ func (e *Endpoints) UpdateExpense(w http.ResponseWriter, r *http.Request) {
 	actorUID, _ := r.Context().Value(shared.UserID).(string)
 
 	exp, err := e.usecases.Expenses.Update(r.Context(), id, expenses.CreateInput{
-		ActorUserID:        actorUID,
-		Name:               req.Name,
-		AmountCents:        req.AmountCents,
-		Currency:           req.Currency,
-		Date:               date,
-		PaymentDate:        paymentDate,
-		PayerFoyerID:       req.PayerFoyerID,
-		CategoryID:         req.CategoryID,
-		DistributionMode:   entities.DistributionMode(req.DistributionMode),
-		ShareRDCCents:      req.ShareRDCCents,
-		Share1erCents:      req.Share1erCents,
-		Settled:            req.Settled,
-		SettledAt:          settledAt,
-		Note:               req.Note,
-		TemplateID:         req.TemplateID,
-		AmountPending:      req.AmountPending,
-		MeterReadingPeriod: req.MeterReadingPeriod,
+		ActorUserID:  actorUID,
+		ExpenseDraft: draftFromCreateRequest(req, date, paymentDate, settledAt),
 	})
 	if err != nil {
 		status, body := routeerrors.ManageErrors(err)
@@ -185,4 +155,29 @@ func parseDateOrNilPtr(s string) (*time.Time, error) {
 		return nil, err
 	}
 	return &t, nil
+}
+
+// draftFromCreateRequest builds the entity-level ExpenseDraft from
+// the wire-shape DTO + the already-parsed dates. Shared by
+// CreateExpense and UpdateExpense — both routes accept the same
+// payload.
+func draftFromCreateRequest(req createExpenseRequest, date time.Time, paymentDate, settledAt *time.Time) entities.ExpenseDraft {
+	return entities.ExpenseDraft{
+		Name:               req.Name,
+		AmountCents:        req.AmountCents,
+		Currency:           req.Currency,
+		Date:               date,
+		PaymentDate:        paymentDate,
+		PayerFoyerID:       req.PayerFoyerID,
+		CategoryID:         req.CategoryID,
+		DistributionMode:   entities.DistributionMode(req.DistributionMode),
+		ShareRDCCents:      req.ShareRDCCents,
+		Share1erCents:      req.Share1erCents,
+		Settled:            req.Settled,
+		SettledAt:          settledAt,
+		Note:               req.Note,
+		TemplateID:         req.TemplateID,
+		AmountPending:      req.AmountPending,
+		MeterReadingPeriod: req.MeterReadingPeriod,
+	}
 }

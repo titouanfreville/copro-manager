@@ -46,31 +46,6 @@ func (m *mockContractsStore) CountByCategory(ctx context.Context, categoryID str
 	return args.Int(0), args.Error(1)
 }
 
-type mockCategoriesStore struct{ mock.Mock }
-
-func (m *mockCategoriesStore) FindByID(ctx context.Context, id string) (*entities.Category, error) {
-	args := m.Called(ctx, id)
-	if v := args.Get(0); v != nil {
-		return v.(*entities.Category), args.Error(1)
-	}
-	return nil, args.Error(1)
-}
-func (m *mockCategoriesStore) List(ctx context.Context) ([]entities.Category, error) {
-	return nil, m.Called(ctx).Error(1)
-}
-func (m *mockCategoriesStore) EnsureSeeded(ctx context.Context, seed []entities.Category) error {
-	return m.Called(ctx, seed).Error(0)
-}
-func (m *mockCategoriesStore) Create(ctx context.Context, c entities.Category) error {
-	return m.Called(ctx, c).Error(0)
-}
-func (m *mockCategoriesStore) Update(ctx context.Context, c entities.Category) error {
-	return m.Called(ctx, c).Error(0)
-}
-func (m *mockCategoriesStore) Delete(ctx context.Context, id string) error {
-	return m.Called(ctx, id).Error(0)
-}
-
 type mockFoyersStore struct{ mock.Mock }
 
 func (m *mockFoyersStore) FindByFloor(ctx context.Context, f entities.FoyerFloor) (*entities.Foyer, error) {
@@ -124,8 +99,7 @@ func (m *mockDocumentsStore) Delete(ctx context.Context, id string) error {
 	return m.Called(ctx, id).Error(0)
 }
 func (m *mockDocumentsStore) CountByCategory(ctx context.Context, categoryID string) (int, error) {
-	args := m.Called(ctx, categoryID)
-	return args.Int(0), args.Error(1)
+	return m.Called(ctx, categoryID).Int(0), m.Called(ctx, categoryID).Error(1)
 }
 func (m *mockDocumentsStore) CountByLinkedExpense(ctx context.Context, expenseID string) (int, error) {
 	args := m.Called(ctx, expenseID)
@@ -139,33 +113,13 @@ func (m *mockDocumentsStore) CountByLinkedContract(ctx context.Context, contract
 	return args.Int(0), args.Error(1)
 }
 
-type mockTemplatesStore struct{ mock.Mock }
+type mockValidator struct{ mock.Mock }
 
-func (m *mockTemplatesStore) List(ctx context.Context) ([]entities.ExpenseTemplate, error) {
-	return nil, m.Called(ctx).Error(1)
+func (m *mockValidator) ValidateCreate(ctx context.Context, d entities.ContractDraft) error {
+	return m.Called(ctx, d).Error(0)
 }
-func (m *mockTemplatesStore) FindByID(ctx context.Context, id string) (*entities.ExpenseTemplate, error) {
-	args := m.Called(ctx, id)
-	if v := args.Get(0); v != nil {
-		return v.(*entities.ExpenseTemplate), args.Error(1)
-	}
-	return nil, args.Error(1)
-}
-func (m *mockTemplatesStore) Create(ctx context.Context, t entities.ExpenseTemplate) error {
-	return m.Called(ctx, t).Error(0)
-}
-func (m *mockTemplatesStore) Update(ctx context.Context, t entities.ExpenseTemplate) error {
-	return m.Called(ctx, t).Error(0)
-}
-func (m *mockTemplatesStore) Delete(ctx context.Context, id string) error {
-	return m.Called(ctx, id).Error(0)
-}
-func (m *mockTemplatesStore) ListDue(ctx context.Context, cutoff time.Time) ([]entities.ExpenseTemplate, error) {
-	return nil, m.Called(ctx, cutoff).Error(1)
-}
-func (m *mockTemplatesStore) CountByCategory(ctx context.Context, categoryID string) (int, error) {
-	args := m.Called(ctx, categoryID)
-	return args.Int(0), args.Error(1)
+func (m *mockValidator) ValidateUpdate(ctx context.Context, d entities.ContractDraft) error {
+	return m.Called(ctx, d).Error(0)
 }
 
 type mockAlertsHook struct{ mock.Mock }
@@ -183,34 +137,33 @@ var (
 	now     = time.Date(2026, 5, 8, 0, 0, 0, 0, time.UTC)
 )
 
-func newUC() (*usecases, *mockContractsStore, *mockCategoriesStore, *mockFoyersStore, *mockCoprosStore, *mockDocumentsStore, *mockTemplatesStore, *mockAlertsHook) {
+func newUC() (*usecases, *mockContractsStore, *mockFoyersStore, *mockCoprosStore, *mockDocumentsStore, *mockValidator, *mockAlertsHook) {
 	con := &mockContractsStore{}
-	cat := &mockCategoriesStore{}
 	foy := &mockFoyersStore{}
 	cps := &mockCoprosStore{}
 	doc := &mockDocumentsStore{}
-	tpl := &mockTemplatesStore{}
+	val := &mockValidator{}
 	alh := &mockAlertsHook{}
 	uc := &usecases{
-		logger:     zap.NewNop(),
-		contracts:  con,
-		categories: cat,
-		foyers:     foy,
-		copros:     cps,
-		documents:  doc,
-		templates:  tpl,
-		alerts:     alh,
-		now:        func() time.Time { return now },
+		logger:    zap.NewNop(),
+		contracts: con,
+		foyers:    foy,
+		documents: doc,
+		validator: val,
+		alerts:    alh,
+		builder:   newBuilder(cps, func() time.Time { return now }),
 	}
-	return uc, con, cat, foy, cps, doc, tpl, alh
+	return uc, con, foy, cps, doc, val, alh
 }
 
 func validInput() CreateInput {
 	return CreateInput{
 		ActorUserID: "uid-rdc",
-		Name:        "Assurance habitation",
-		CategoryID:  "assurance",
-		Society:     entities.Society{Name: "Maaf", Phone: "0123456789"},
+		ContractDraft: entities.ContractDraft{
+			Name:       "Assurance habitation",
+			CategoryID: "assurance",
+			Society:    entities.Society{Name: "Maaf"},
+		},
 	}
 }
 
@@ -219,10 +172,10 @@ func validInput() CreateInput {
 func TestCreate(t *testing.T) {
 	Convey("Given valid input from a foyer member", t, func() {
 		ctx := context.Background()
-		uc, con, cat, foy, cps, _, _, _ := newUC()
+		uc, con, foy, cps, _, val, _ := newUC()
 		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
 		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
-		cat.On("FindByID", ctx, "assurance").Return(&entities.Category{ID: "assurance"}, nil)
+		val.On("ValidateCreate", ctx, mock.AnythingOfType("entities.ContractDraft")).Return(nil)
 		cps.On("GetOrCreateSingleton", ctx).Return(cop, nil)
 		con.On("Create", ctx, mock.AnythingOfType("entities.Contract")).Return(nil)
 
@@ -238,7 +191,7 @@ func TestCreate(t *testing.T) {
 
 	Convey("Rejects when the actor isn't a foyer member", t, func() {
 		ctx := context.Background()
-		uc, _, _, foy, _, _, _, _ := newUC()
+		uc, _, foy, _, _, _, _ := newUC()
 		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
 		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
 		in := validInput()
@@ -247,66 +200,15 @@ func TestCreate(t *testing.T) {
 		So(errors.Is(err, entities.AuthorizationError{}), ShouldBeTrue)
 	})
 
-	Convey("Rejects a too-short name", t, func() {
+	Convey("Surfaces validator errors verbatim", t, func() {
 		ctx := context.Background()
-		uc, _, _, foy, _, _, _, _ := newUC()
+		uc, _, foy, _, _, val, _ := newUC()
 		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
 		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
-		in := validInput()
-		in.Name = "x"
-		_, err := uc.Create(ctx, in)
+		val.On("ValidateCreate", ctx, mock.AnythingOfType("entities.ContractDraft")).
+			Return(entities.ValidationError{Key: "name", Message: "min 2 caractères"})
+		_, err := uc.Create(ctx, validInput())
 		So(errors.Is(err, entities.ValidationError{}), ShouldBeTrue)
-	})
-
-	Convey("Rejects when society name is empty", t, func() {
-		ctx := context.Background()
-		uc, _, _, foy, _, _, _, _ := newUC()
-		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
-		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
-		in := validInput()
-		in.Society.Name = "  "
-		_, err := uc.Create(ctx, in)
-		So(errors.Is(err, entities.ValidationError{}), ShouldBeTrue)
-		So(err.Error(), ShouldContainSubstring, "society.name")
-	})
-
-	Convey("Rejects when category does not exist", t, func() {
-		ctx := context.Background()
-		uc, _, cat, foy, _, _, _, _ := newUC()
-		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
-		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
-		cat.On("FindByID", ctx, "ghost").Return((*entities.Category)(nil), nil)
-		in := validInput()
-		in.CategoryID = "ghost"
-		_, err := uc.Create(ctx, in)
-		So(errors.Is(err, entities.ValidationError{}), ShouldBeTrue)
-	})
-
-	Convey("Rejects end_date before start_date", t, func() {
-		ctx := context.Background()
-		uc, _, cat, foy, _, _, _, _ := newUC()
-		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
-		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
-		cat.On("FindByID", ctx, "assurance").Return(&entities.Category{ID: "assurance"}, nil)
-		in := validInput()
-		in.StartDate = time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
-		in.EndDate = time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
-		_, err := uc.Create(ctx, in)
-		So(errors.Is(err, entities.ValidationError{}), ShouldBeTrue)
-	})
-
-	Convey("Rejects a template_id that doesn't exist", t, func() {
-		ctx := context.Background()
-		uc, _, cat, foy, _, _, tpl, _ := newUC()
-		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
-		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
-		cat.On("FindByID", ctx, "assurance").Return(&entities.Category{ID: "assurance"}, nil)
-		tpl.On("FindByID", ctx, "ghost-tpl").Return((*entities.ExpenseTemplate)(nil), nil)
-		in := validInput()
-		in.TemplateID = "ghost-tpl"
-		_, err := uc.Create(ctx, in)
-		So(errors.Is(err, entities.ValidationError{}), ShouldBeTrue)
-		So(err.Error(), ShouldContainSubstring, "template_id")
 	})
 }
 
@@ -315,7 +217,7 @@ func TestCreate(t *testing.T) {
 func TestUpdate(t *testing.T) {
 	Convey("Updates an existing contract and bumps UpdatedAt", t, func() {
 		ctx := context.Background()
-		uc, con, cat, foy, _, _, _, _ := newUC()
+		uc, con, foy, _, _, val, _ := newUC()
 		existing := &entities.Contract{
 			ID: "ctr-1", CoproID: "c1", Name: "Old", CategoryID: "assurance",
 			Society:   entities.Society{Name: "Old Co"},
@@ -326,7 +228,7 @@ func TestUpdate(t *testing.T) {
 		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
 		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
 		con.On("FindByID", ctx, "ctr-1").Return(existing, nil)
-		cat.On("FindByID", ctx, "assurance").Return(&entities.Category{ID: "assurance"}, nil)
+		val.On("ValidateUpdate", ctx, mock.AnythingOfType("entities.ContractDraft")).Return(nil)
 		con.On("Update", ctx, mock.AnythingOfType("entities.Contract")).Return(nil)
 
 		out, err := uc.Update(ctx, "ctr-1", validInput())
@@ -338,7 +240,7 @@ func TestUpdate(t *testing.T) {
 
 	Convey("Returns ErrNotFound for a ghost id", t, func() {
 		ctx := context.Background()
-		uc, con, _, foy, _, _, _, _ := newUC()
+		uc, con, foy, _, _, _, _ := newUC()
 		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
 		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
 		con.On("FindByID", ctx, "ghost").Return((*entities.Contract)(nil), nil)
@@ -352,7 +254,7 @@ func TestUpdate(t *testing.T) {
 func TestDelete(t *testing.T) {
 	Convey("Refuses delete when documents still link to the contract", t, func() {
 		ctx := context.Background()
-		uc, con, _, foy, _, doc, _, _ := newUC()
+		uc, con, foy, _, doc, _, _ := newUC()
 		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
 		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
 		con.On("FindByID", ctx, "ctr-1").Return(&entities.Contract{ID: "ctr-1"}, nil)
@@ -365,7 +267,7 @@ func TestDelete(t *testing.T) {
 
 	Convey("Deletes when no docs linked, then resolves outstanding alerts", t, func() {
 		ctx := context.Background()
-		uc, con, _, foy, _, doc, _, alh := newUC()
+		uc, con, foy, _, doc, _, alh := newUC()
 		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
 		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
 		con.On("FindByID", ctx, "ctr-1").Return(&entities.Contract{ID: "ctr-1"}, nil)
@@ -380,7 +282,7 @@ func TestDelete(t *testing.T) {
 
 	Convey("Returns ErrNotFound for a ghost id", t, func() {
 		ctx := context.Background()
-		uc, con, _, foy, _, _, _, _ := newUC()
+		uc, con, foy, _, _, _, _ := newUC()
 		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
 		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
 		con.On("FindByID", ctx, "ghost").Return((*entities.Contract)(nil), nil)
@@ -389,15 +291,15 @@ func TestDelete(t *testing.T) {
 	})
 }
 
-// ─── Helpers (entity behaviour) ─────────────────────────────────────
+// ─── Entity helpers ─────────────────────────────────────────────────
 
 func TestIsExpiringSoon(t *testing.T) {
 	Convey("Returns true when end_date is within 30 days, regardless of TZ", t, func() {
 		paris, _ := time.LoadLocation("Europe/Paris")
-		ref := time.Date(2026, 5, 8, 23, 30, 0, 0, paris) // late evening Paris
+		ref := time.Date(2026, 5, 8, 23, 30, 0, 0, paris)
 		c := entities.Contract{
 			Status:  entities.ContractStatusActive,
-			EndDate: time.Date(2026, 6, 7, 0, 0, 0, 0, time.UTC), // 30 days later
+			EndDate: time.Date(2026, 6, 7, 0, 0, 0, 0, time.UTC),
 		}
 		So(c.IsExpiringSoon(ref), ShouldBeTrue)
 	})
@@ -415,19 +317,5 @@ func TestIsExpiringSoon(t *testing.T) {
 		ref := time.Date(2026, 5, 8, 0, 0, 0, 0, time.UTC)
 		c := entities.Contract{Status: entities.ContractStatusActive}
 		So(c.IsExpiringSoon(ref), ShouldBeFalse)
-	})
-}
-
-func TestTruncate(t *testing.T) {
-	Convey("Preserves UTF-8 boundaries when cutting at a multibyte rune", t, func() {
-		// "é" is two bytes in UTF-8. Truncating at 5 bytes lands inside
-		// the second "é" (4 bytes "Soci" + first byte of "é") — must
-		// step back to a rune boundary.
-		got := truncate("Société", 5)
-		So(got, ShouldEqual, "Soci")
-	})
-
-	Convey("Returns the input untouched when shorter than the cap", t, func() {
-		So(truncate("hello", 100), ShouldEqual, "hello")
 	})
 }

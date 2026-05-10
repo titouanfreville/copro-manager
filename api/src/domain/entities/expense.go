@@ -110,3 +110,26 @@ type Expense struct {
 	// foyer-facing onSnapshot — populated by the adapter, never persisted.
 	Attachments []Attachment `json:"attachments,omitempty" firestore:"-"`
 }
+
+// ExpenseDraft is the user-editable subset for Create/Update. Server-
+// owned fields (ID, CoproID, computed shares, CreatedAt, UpdatedAt)
+// and orchestration metadata (TrustExplicitShares, ActorUserID) are
+// not part of the draft — those live in the usecase's CreateInput.
+type ExpenseDraft struct {
+	Name               string
+	AmountCents        int
+	Currency           string
+	Date               time.Time
+	PaymentDate        *time.Time
+	PayerFoyerID       string
+	CategoryID         string
+	DistributionMode   DistributionMode
+	ShareRDCCents      int
+	Share1erCents      int
+	Note               string
+	Settled            bool
+	SettledAt          *time.Time
+	TemplateID         string
+	AmountPending      bool
+	MeterReadingPeriod string
+}

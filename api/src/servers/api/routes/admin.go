@@ -6,7 +6,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	coprosadapter "github.com/titouanfreville/copro-manager/api/src/adapters/copros"
+	coprosstore "github.com/titouanfreville/copro-manager/api/src/adapters/store/copros"
 	"github.com/titouanfreville/copro-manager/api/src/core/rest"
 	"github.com/titouanfreville/copro-manager/api/src/domain/entities"
 	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/expenses"
@@ -221,7 +221,7 @@ func (e *Endpoints) AdminConsolidateCopros(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	summary, err := coprosadapter.Consolidate(r.Context(), e.firestore, e.logger, coprosadapter.ConsolidationOptions{
+	summary, err := coprosstore.Consolidate(r.Context(), e.firestore, e.logger, coprosstore.ConsolidationOptions{
 		CanonicalCoproIDOverride: strings.TrimSpace(req.CanonicalCoproID),
 		DryRun:                   req.DryRun,
 	})

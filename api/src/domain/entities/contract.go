@@ -116,6 +116,27 @@ type Contract struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// ContractDraft is the user-editable subset of a Contract — what the
+// validator sees and what the builder normalizes. It deliberately
+// omits server-owned fields (ID, CoproID, CreatedAt, UpdatedAt).
+//
+// Lives at the entity layer so any package (validator, builder, route
+// handler) can consume the type without depending on the contracts
+// usecase package.
+type ContractDraft struct {
+	Name             string
+	CategoryID       string
+	Society          Society
+	Contact          Contact
+	StartDate        time.Time
+	EndDate          time.Time
+	AmountCents      int
+	BillingFrequency BillingFrequency
+	TemplateID       string
+	Status           ContractStatus
+	Note             string
+}
+
 // IsExpiringSoon returns true when the contract's end_date is set and
 // falls within `ContractExpiringSoonDays` from `ref`. The comparison
 // is date-only in `ref`'s location: end_date is parsed as UTC midnight

@@ -25,3 +25,22 @@ type Settlement struct {
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
 }
+
+// SettlementDraft is the user-editable subset for Create/Update.
+// Server-owned fields (ID, CoproID, CreatedAt, UpdatedAt) are stamped
+// at build time.
+type SettlementDraft struct {
+	FromFoyerID string
+	ToFoyerID   string
+	AmountCents int
+	Currency    string
+	Date        time.Time
+	Note        string
+	ExpenseIDs  []string
+}
+
+// SettlementMaxExpenseLinks bounds how many expenses a single
+// settlement can audit-link. Each link costs Firestore reads at
+// validation time — keep small so a pathological request can't burn
+// quotas.
+const SettlementMaxExpenseLinks = 50

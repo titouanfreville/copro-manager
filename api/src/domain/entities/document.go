@@ -3,26 +3,9 @@ package entities
 import "time"
 
 // DocumentMaxSizeBytes caps an upload at 10 MB (PRD FR34, mirroring the
-// per-expense attachment cap so users have a consistent limit).
+// per-expense attachment cap so users have a consistent limit). The
+// content-type whitelist lives in core/rest — see rest.AllowedUploadMimeTypes.
 const DocumentMaxSizeBytes int64 = 10 * 1024 * 1024
-
-// AllowedDocumentMimeTypes is the same whitelist as expense attachments.
-// Keeping the two lists identical avoids "this works as an attachment but
-// not as a standalone" UX surprises.
-var AllowedDocumentMimeTypes = AllowedAttachmentMimeTypes
-
-// IsAllowedDocumentMime reports whether the supplied content-type is in
-// the document whitelist.
-func IsAllowedDocumentMime(mime string) bool {
-	_, ok := AllowedDocumentMimeTypes[mime]
-	return ok
-}
-
-// DocumentExtension returns the canonical extension for a whitelisted
-// MIME type, or "" if unknown.
-func DocumentExtension(mime string) string {
-	return AllowedDocumentMimeTypes[mime]
-}
 
 // Document is a standalone uploaded artifact (insurance contract, syndic
 // statement, AGE minutes, plumber estimate, …) that may or may not be
@@ -58,3 +41,34 @@ type Document struct {
 	// invoice) and the contract that produced it.
 	LinkedContractID string `json:"linked_contract_id,omitempty"`
 }
+
+// DocumentDraft is the user-editable subset for the upload flow
+// (RequestUploadURL + Record). Server-owned fields (ID, CoproID,
+// ObjectName, UploadedAt, UploadedBy) are stamped at build time.
+type DocumentDraft struct {
+	Title            string
+	Description      string
+	CategoryID       string
+	Group            string
+	OriginalFilename string
+	ContentType      string
+	SizeBytes        int64
+	LinkedExpenseID  string
+	LinkedContractID string
+}
+
+// DocumentMetadataDraft is the smaller subset for Update — only the
+// metadata fields the user can edit after upload (file is immutable).
+type DocumentMetadataDraft struct {
+	Title            string
+	Description      string
+	CategoryID       string
+	Group            string
+	LinkedContractID string
+}
+
+// DocumentMaxAttachmentsPerExpense caps how many documents can hang
+// off a single expense via LinkedExpenseID. Mirrors the legacy
+// AttachmentMaxPerExpense — kept on the entity so the validator and
+// the cap UI can both reach it without a usecase round-trip.
+const DocumentMaxAttachmentsPerExpense = 10

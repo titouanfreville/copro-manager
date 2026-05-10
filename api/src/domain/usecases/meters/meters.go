@@ -21,6 +21,7 @@ import (
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
+	"github.com/titouanfreville/copro-manager/api/src/core/authz"
 	"github.com/titouanfreville/copro-manager/api/src/domain/entities"
 	domainerrors "github.com/titouanfreville/copro-manager/api/src/domain/errors"
 	"github.com/titouanfreville/copro-manager/api/src/domain/interfaces"
@@ -734,33 +735,8 @@ func (uc *usecases) analyzeImage(ctx context.Context, kind entities.MeterPhotoKi
 	return &OCRSuggestion{}
 }
 
-// authorize replicates the foyer-member gate used across the project.
 func (uc *usecases) authorize(ctx context.Context, actorUserID string) error {
-	if actorUserID == "" {
-		return nil
-	}
-	rdc, err := uc.foyers.FindByFloor(ctx, entities.FoyerFloorRDC)
-	if err != nil {
-		return fmt.Errorf("find rdc: %w", err)
-	}
-	premier, err := uc.foyers.FindByFloor(ctx, entities.FoyerFloor1er)
-	if err != nil {
-		return fmt.Errorf("find 1er: %w", err)
-	}
-	if rdc == nil || premier == nil {
-		return fmt.Errorf("%w: both foyers must exist", domainerrors.ErrNotFound)
-	}
-	for _, mid := range rdc.MemberIDs {
-		if mid == actorUserID {
-			return nil
-		}
-	}
-	for _, mid := range premier.MemberIDs {
-		if mid == actorUserID {
-			return nil
-		}
-	}
-	return entities.AuthorizationError{Code: "not_foyer_member"}
+	return authz.RequireFoyerMember(ctx, uc.foyers, actorUserID)
 }
 
 func validateSave(in SaveInput) error {

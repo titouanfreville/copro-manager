@@ -29,13 +29,15 @@ func (req createSettlementRequest) toInput(actorUID string) (settlements.CreateI
 	}
 	return settlements.CreateInput{
 		ActorUserID: actorUID,
-		FromFoyerID: req.FromFoyerID,
-		ToFoyerID:   req.ToFoyerID,
-		AmountCents: req.AmountCents,
-		Currency:    req.Currency,
-		Date:        date,
-		Note:        req.Note,
-		ExpenseIDs:  req.ExpenseIDs,
+		SettlementDraft: entities.SettlementDraft{
+			FromFoyerID: req.FromFoyerID,
+			ToFoyerID:   req.ToFoyerID,
+			AmountCents: req.AmountCents,
+			Currency:    req.Currency,
+			Date:        date,
+			Note:        req.Note,
+			ExpenseIDs:  req.ExpenseIDs,
+		},
 	}, nil
 }
 

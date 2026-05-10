@@ -39,21 +39,23 @@ func (req createTemplateRequest) toInput(actorUID string) (templates.CreateTempl
 		return templates.CreateTemplateInput{}, err
 	}
 	return templates.CreateTemplateInput{
-		ActorUserID:        actorUID,
-		Name:               req.Name,
-		AmountDefaultCents: req.AmountDefaultCents,
-		Currency:           req.Currency,
-		CategoryID:         req.CategoryID,
-		PayerFoyerID:       req.PayerFoyerID,
-		DistributionMode:   entities.DistributionMode(req.DistributionMode),
-		ShareRDCCents:      req.ShareRDCCents,
-		Share1erCents:      req.Share1erCents,
-		Note:               req.Note,
-		ScheduleActive:     req.ScheduleActive,
-		Frequency:          entities.Frequency(req.Frequency),
-		DayOfMonth:         req.DayOfMonth,
-		StartDate:          startDate,
-		EndDate:            endDate,
+		ActorUserID: actorUID,
+		ExpenseTemplateDraft: entities.ExpenseTemplateDraft{
+			Name:               req.Name,
+			AmountDefaultCents: req.AmountDefaultCents,
+			Currency:           req.Currency,
+			CategoryID:         req.CategoryID,
+			PayerFoyerID:       req.PayerFoyerID,
+			DistributionMode:   entities.DistributionMode(req.DistributionMode),
+			ShareRDCCents:      req.ShareRDCCents,
+			Share1erCents:      req.Share1erCents,
+			Note:               req.Note,
+			ScheduleActive:     req.ScheduleActive,
+			Frequency:          entities.Frequency(req.Frequency),
+			DayOfMonth:         req.DayOfMonth,
+			StartDate:          startDate,
+			EndDate:            endDate,
+		},
 	}, nil
 }
 

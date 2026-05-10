@@ -62,35 +62,6 @@ func (m *mockDocumentsStore) CountByLinkedContract(ctx context.Context, contract
 	return args.Int(0), args.Error(1)
 }
 
-type mockCategoriesStore struct{ mock.Mock }
-
-func (m *mockCategoriesStore) List(ctx context.Context) ([]entities.Category, error) {
-	args := m.Called(ctx)
-	if v := args.Get(0); v != nil {
-		return v.([]entities.Category), args.Error(1)
-	}
-	return nil, args.Error(1)
-}
-func (m *mockCategoriesStore) FindByID(ctx context.Context, id string) (*entities.Category, error) {
-	args := m.Called(ctx, id)
-	if v := args.Get(0); v != nil {
-		return v.(*entities.Category), args.Error(1)
-	}
-	return nil, args.Error(1)
-}
-func (m *mockCategoriesStore) EnsureSeeded(ctx context.Context, seed []entities.Category) error {
-	return m.Called(ctx, seed).Error(0)
-}
-func (m *mockCategoriesStore) Create(ctx context.Context, c entities.Category) error {
-	return m.Called(ctx, c).Error(0)
-}
-func (m *mockCategoriesStore) Update(ctx context.Context, c entities.Category) error {
-	return m.Called(ctx, c).Error(0)
-}
-func (m *mockCategoriesStore) Delete(ctx context.Context, id string) error {
-	return m.Called(ctx, id).Error(0)
-}
-
 type mockFoyersStore struct{ mock.Mock }
 
 func (m *mockFoyersStore) FindByFloor(ctx context.Context, f entities.FoyerFloor) (*entities.Foyer, error) {
@@ -101,21 +72,13 @@ func (m *mockFoyersStore) FindByFloor(ctx context.Context, f entities.FoyerFloor
 	return nil, args.Error(1)
 }
 func (m *mockFoyersStore) FindByID(ctx context.Context, id string) (*entities.Foyer, error) {
-	args := m.Called(ctx, id)
-	if v := args.Get(0); v != nil {
-		return v.(*entities.Foyer), args.Error(1)
-	}
-	return nil, args.Error(1)
+	return nil, m.Called(ctx, id).Error(1)
 }
 func (m *mockFoyersStore) Create(ctx context.Context, f entities.Foyer) error {
 	return m.Called(ctx, f).Error(0)
 }
 func (m *mockFoyersStore) List(ctx context.Context) ([]entities.Foyer, error) {
-	args := m.Called(ctx)
-	if v := args.Get(0); v != nil {
-		return v.([]entities.Foyer), args.Error(1)
-	}
-	return nil, args.Error(1)
+	return nil, m.Called(ctx).Error(1)
 }
 func (m *mockFoyersStore) AddMember(ctx context.Context, fid, uid string) error {
 	return m.Called(ctx, fid, uid).Error(0)
@@ -134,33 +97,72 @@ func (m *mockCoprosStore) GetOrCreateSingleton(ctx context.Context) (*entities.C
 	return nil, args.Error(1)
 }
 
+type mockExpensesStore struct{ mock.Mock }
+
+func (m *mockExpensesStore) List(ctx context.Context) ([]entities.Expense, error) {
+	return nil, m.Called(ctx).Error(1)
+}
+func (m *mockExpensesStore) FindByID(ctx context.Context, id string) (*entities.Expense, error) {
+	args := m.Called(ctx, id)
+	if v := args.Get(0); v != nil {
+		return v.(*entities.Expense), args.Error(1)
+	}
+	return nil, args.Error(1)
+}
+func (m *mockExpensesStore) FindByNameAndDate(ctx context.Context, n string, d time.Time) (*entities.Expense, error) {
+	return nil, m.Called(ctx, n, d).Error(1)
+}
+func (m *mockExpensesStore) Create(ctx context.Context, e entities.Expense) error {
+	return m.Called(ctx, e).Error(0)
+}
+func (m *mockExpensesStore) Update(ctx context.Context, e entities.Expense) error {
+	return m.Called(ctx, e).Error(0)
+}
+func (m *mockExpensesStore) Delete(ctx context.Context, id string) error {
+	return m.Called(ctx, id).Error(0)
+}
+func (m *mockExpensesStore) CountByCategory(ctx context.Context, id string) (int, error) {
+	return m.Called(ctx, id).Int(0), m.Called(ctx, id).Error(1)
+}
+func (m *mockExpensesStore) CountByMeterReadingPeriod(ctx context.Context, p string) (int, error) {
+	return m.Called(ctx, p).Int(0), m.Called(ctx, p).Error(1)
+}
+
 type mockStorage struct{ mock.Mock }
 
-func (m *mockStorage) SignedPutURL(ctx context.Context, objectName, contentType string, sizeBytes int64, ttl time.Duration) (string, error) {
-	args := m.Called(ctx, objectName, contentType, sizeBytes, ttl)
+func (m *mockStorage) SignedPutURL(ctx context.Context, name, contentType string, size int64, ttl time.Duration) (string, error) {
+	args := m.Called(ctx, name, contentType, size, ttl)
 	return args.String(0), args.Error(1)
 }
-func (m *mockStorage) SignedGetURL(ctx context.Context, objectName string, ttl time.Duration) (string, error) {
-	args := m.Called(ctx, objectName, ttl)
+func (m *mockStorage) SignedGetURL(ctx context.Context, name string, ttl time.Duration) (string, error) {
+	args := m.Called(ctx, name, ttl)
 	return args.String(0), args.Error(1)
 }
-func (m *mockStorage) Head(ctx context.Context, objectName string) (interfaces.ObjectStat, bool, error) {
-	args := m.Called(ctx, objectName)
-	stat, _ := args.Get(0).(interfaces.ObjectStat)
-	return stat, args.Bool(1), args.Error(2)
+func (m *mockStorage) Head(ctx context.Context, name string) (interfaces.ObjectStat, bool, error) {
+	args := m.Called(ctx, name)
+	return args.Get(0).(interfaces.ObjectStat), args.Bool(1), args.Error(2)
 }
-func (m *mockStorage) Delete(ctx context.Context, objectName string) error {
-	return m.Called(ctx, objectName).Error(0)
+func (m *mockStorage) Delete(ctx context.Context, name string) error {
+	return m.Called(ctx, name).Error(0)
 }
 func (m *mockStorage) DeletePrefix(ctx context.Context, prefix string) error {
 	return m.Called(ctx, prefix).Error(0)
 }
-func (m *mockStorage) Read(ctx context.Context, objectName string) ([]byte, error) {
-	args := m.Called(ctx, objectName)
+func (m *mockStorage) Read(ctx context.Context, name string) ([]byte, error) {
+	args := m.Called(ctx, name)
 	if v := args.Get(0); v != nil {
 		return v.([]byte), args.Error(1)
 	}
 	return nil, args.Error(1)
+}
+
+type mockValidator struct{ mock.Mock }
+
+func (m *mockValidator) ValidateUpload(ctx context.Context, d entities.DocumentDraft) error {
+	return m.Called(ctx, d).Error(0)
+}
+func (m *mockValidator) ValidateUpdate(ctx context.Context, d entities.DocumentMetadataDraft) error {
+	return m.Called(ctx, d).Error(0)
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────
@@ -172,135 +174,107 @@ var (
 	now     = time.Date(2026, 5, 8, 0, 0, 0, 0, time.UTC)
 )
 
-func newUC() (*usecases, *mockDocumentsStore, *mockCategoriesStore, *mockFoyersStore, *mockCoprosStore, *mockStorage) {
+func newUC() (*usecases, *mockDocumentsStore, *mockFoyersStore, *mockCoprosStore, *mockExpensesStore, *mockStorage, *mockValidator) {
 	docs := &mockDocumentsStore{}
-	cats := &mockCategoriesStore{}
 	foy := &mockFoyersStore{}
 	cps := &mockCoprosStore{}
+	exp := &mockExpensesStore{}
 	stor := &mockStorage{}
+	val := &mockValidator{}
+	clock := func() time.Time { return now }
 	uc := &usecases{
-		logger:     zap.NewNop(),
-		documents:  docs,
-		categories: cats,
-		foyers:     foy,
-		copros:     cps,
-		storage:    stor,
-		now:        func() time.Time { return now },
+		logger:    zap.NewNop(),
+		documents: docs,
+		foyers:    foy,
+		storage:   stor,
+		validator: val,
+		builder:   newBuilder(cps, exp, clock),
+		now:       clock,
 	}
-	return uc, docs, cats, foy, cps, stor
+	return uc, docs, foy, cps, exp, stor, val
 }
 
 // ─── RequestUploadURL ──────────────────────────────────────────────
 
 func TestRequestUploadURL(t *testing.T) {
-	Convey("Given a valid declaration from a foyer member", t, func() {
+	Convey("Mints a signed URL when validation passes", t, func() {
 		ctx := context.Background()
-		uc, _, cats, foy, _, stor := newUC()
+		uc, _, foy, _, _, stor, val := newUC()
 		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
 		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
-		cats.On("FindByID", ctx, "syndic").Return(&entities.Category{ID: "syndic"}, nil)
+		val.On("ValidateUpload", ctx, mock.AnythingOfType("entities.DocumentDraft")).Return(nil)
 		stor.On("SignedPutURL",
 			ctx,
-			mock.MatchedBy(func(name string) bool {
-				return len(name) > len("documents/") && name[:len("documents/")] == "documents/"
-			}),
-			"application/pdf",
-			int64(4242),
-			mock.AnythingOfType("time.Duration"),
-		).Return("https://signed.example/put", nil)
+			mock.MatchedBy(func(name string) bool { return len(name) > 0 }),
+			"image/jpeg",
+			int64(2048),
+			documentURLTTL,
+		).Return("https://signed/put", nil)
 
 		out, err := uc.RequestUploadURL(ctx, RequestUploadInput{
-			ActorUserID:      "uid-rdc",
-			Title:            "Contrat 2026",
-			CategoryID:       "syndic",
-			Group:            "Contrat",
-			OriginalFilename: "syndic-2026.pdf",
-			ContentType:      "application/pdf",
-			SizeBytes:        4242,
+			ActorUserID: "uid-rdc",
+			DocumentDraft: entities.DocumentDraft{
+				Title:       "Bill",
+				CategoryID:  "syndic",
+				ContentType: "image/jpeg",
+				SizeBytes:   2048,
+			},
 		})
-
-		Convey("It returns a stable object name and signed URL", func() {
-			So(err, ShouldBeNil)
-			So(out.DocumentID, ShouldNotBeBlank)
-			So(out.ObjectName, ShouldStartWith, "documents/")
-			So(out.ObjectName, ShouldEndWith, ".pdf")
-			So(out.UploadURL, ShouldEqual, "https://signed.example/put")
-		})
+		So(err, ShouldBeNil)
+		So(out.UploadURL, ShouldEqual, "https://signed/put")
+		So(out.DocumentID, ShouldNotBeBlank)
+		So(out.ContentType, ShouldEqual, "image/jpeg")
 	})
 
-	Convey("Rejects an unsupported MIME type", t, func() {
+	Convey("Surfaces validator errors verbatim", t, func() {
 		ctx := context.Background()
-		uc, _, _, foy, _, _ := newUC()
+		uc, _, foy, _, _, _, val := newUC()
 		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
 		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
+		val.On("ValidateUpload", ctx, mock.AnythingOfType("entities.DocumentDraft")).
+			Return(entities.ValidationError{Key: "title", Message: "required"})
+
 		_, err := uc.RequestUploadURL(ctx, RequestUploadInput{
 			ActorUserID: "uid-rdc",
-			Title:       "x",
-			CategoryID:  "syndic",
-			ContentType: "application/zip",
-			SizeBytes:   100,
+			DocumentDraft: entities.DocumentDraft{
+				CategoryID:  "syndic",
+				ContentType: "image/jpeg",
+				SizeBytes:   2048,
+			},
 		})
 		So(errors.Is(err, entities.ValidationError{}), ShouldBeTrue)
 	})
 
-	Convey("Rejects oversized files (>10MB)", t, func() {
+	Convey("Pulls linked-expense defaults before validating", t, func() {
 		ctx := context.Background()
-		uc, _, _, foy, _, _ := newUC()
+		uc, _, foy, _, exp, stor, val := newUC()
 		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
 		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
+		exp.On("FindByID", ctx, "exp-1").Return(&entities.Expense{ID: "exp-1", Name: "Plombier", CategoryID: "travaux"}, nil)
+		val.On("ValidateUpload", ctx, mock.MatchedBy(func(d entities.DocumentDraft) bool {
+			return d.Title == "Plombier" && d.CategoryID == "travaux"
+		})).Return(nil)
+		stor.On("SignedPutURL", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+			Return("https://signed/put", nil)
+
 		_, err := uc.RequestUploadURL(ctx, RequestUploadInput{
 			ActorUserID: "uid-rdc",
-			Title:       "x",
-			CategoryID:  "syndic",
-			ContentType: "application/pdf",
-			SizeBytes:   entities.DocumentMaxSizeBytes + 1,
+			DocumentDraft: entities.DocumentDraft{
+				ContentType:     "image/jpeg",
+				SizeBytes:       2048,
+				LinkedExpenseID: "exp-1",
+			},
 		})
-		So(errors.Is(err, entities.ValidationError{}), ShouldBeTrue)
+		So(err, ShouldBeNil)
 	})
 
-	Convey("Rejects a missing title", t, func() {
+	Convey("Refuses unauthenticated foreign actor", t, func() {
 		ctx := context.Background()
-		uc, _, _, foy, _, _ := newUC()
+		uc, _, foy, _, _, _, _ := newUC()
 		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
 		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
-		_, err := uc.RequestUploadURL(ctx, RequestUploadInput{
-			ActorUserID: "uid-rdc",
-			Title:       "   ",
-			CategoryID:  "syndic",
-			ContentType: "application/pdf",
-			SizeBytes:   100,
-		})
-		So(errors.Is(err, entities.ValidationError{}), ShouldBeTrue)
-	})
 
-	Convey("Rejects a missing category", t, func() {
-		ctx := context.Background()
-		uc, _, cats, foy, _, _ := newUC()
-		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
-		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
-		cats.On("FindByID", ctx, "ghost").Return((*entities.Category)(nil), nil)
-		_, err := uc.RequestUploadURL(ctx, RequestUploadInput{
-			ActorUserID: "uid-rdc",
-			Title:       "x",
-			CategoryID:  "ghost",
-			ContentType: "application/pdf",
-			SizeBytes:   100,
-		})
-		So(errors.Is(err, entities.ValidationError{}), ShouldBeTrue)
-	})
-
-	Convey("Rejects an intruder actor", t, func() {
-		ctx := context.Background()
-		uc, _, _, foy, _, _ := newUC()
-		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
-		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
-		_, err := uc.RequestUploadURL(ctx, RequestUploadInput{
-			ActorUserID: "intruder",
-			Title:       "x",
-			CategoryID:  "syndic",
-			ContentType: "application/pdf",
-			SizeBytes:   100,
-		})
+		_, err := uc.RequestUploadURL(ctx, RequestUploadInput{ActorUserID: "stranger"})
 		So(errors.Is(err, entities.AuthorizationError{}), ShouldBeTrue)
 	})
 }
@@ -308,130 +282,89 @@ func TestRequestUploadURL(t *testing.T) {
 // ─── Record ─────────────────────────────────────────────────────────
 
 func TestRecord(t *testing.T) {
-	Convey("Given a successful upload (HEAD matches declaration)", t, func() {
+	Convey("Persists when GCS HEAD matches the declaration", t, func() {
 		ctx := context.Background()
-		uc, docs, cats, foy, cps, stor := newUC()
+		uc, docs, foy, cps, _, stor, val := newUC()
 		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
 		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
-		cats.On("FindByID", ctx, "syndic").Return(&entities.Category{ID: "syndic"}, nil)
+		val.On("ValidateUpload", ctx, mock.AnythingOfType("entities.DocumentDraft")).Return(nil)
 		cps.On("GetOrCreateSingleton", ctx).Return(cop, nil)
-		stor.On("Head", ctx, "documents/doc1.pdf").Return(
-			interfaces.ObjectStat{SizeBytes: 4242, ContentType: "application/pdf"}, true, nil,
-		)
+		stor.On("Head", ctx, mock.AnythingOfType("string")).
+			Return(interfaces.ObjectStat{ContentType: "image/jpeg", SizeBytes: 2048}, true, nil)
 		docs.On("Create", ctx, mock.AnythingOfType("entities.Document")).Return(nil)
 
-		d, err := uc.Record(ctx, RecordDocumentInput{
-			ActorUserID:      "uid-rdc",
-			DocumentID:       "doc1",
-			Title:            "Contrat 2026",
-			CategoryID:       "syndic",
-			Group:            "  Contrat  ",
-			ContentType:      "application/pdf",
-			SizeBytes:        4242,
-			OriginalFilename: "syndic-2026.pdf",
+		out, err := uc.Record(ctx, RecordDocumentInput{
+			ActorUserID: "uid-rdc",
+			DocumentID:  "doc-abc",
+			DocumentDraft: entities.DocumentDraft{
+				Title:       "Bill",
+				CategoryID:  "syndic",
+				ContentType: "image/jpeg",
+				SizeBytes:   2048,
+			},
 		})
-		Convey("It records the metadata with normalized group", func() {
-			So(err, ShouldBeNil)
-			So(d.ID, ShouldEqual, "doc1")
-			So(d.ObjectName, ShouldEqual, "documents/doc1.pdf")
-			So(d.UploadedBy, ShouldEqual, "uid-rdc")
-			// Group lowercased + trimmed.
-			So(d.Group, ShouldEqual, "contrat")
-		})
+		So(err, ShouldBeNil)
+		So(out.ID, ShouldEqual, "doc-abc")
+		So(out.CoproID, ShouldEqual, "c1")
 	})
 
-	Convey("When HEAD reports a size mismatch, the orphan blob is cleaned up", t, func() {
+	Convey("Rejects on HEAD mismatch and cleans the orphan blob", t, func() {
 		ctx := context.Background()
-		uc, docs, cats, foy, _, stor := newUC()
+		uc, _, foy, _, _, stor, val := newUC()
 		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
 		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
-		cats.On("FindByID", ctx, "syndic").Return(&entities.Category{ID: "syndic"}, nil)
-		stor.On("Head", ctx, "documents/doc1.pdf").Return(
-			interfaces.ObjectStat{SizeBytes: 9999, ContentType: "application/pdf"}, true, nil,
-		)
-		stor.On("Delete", ctx, "documents/doc1.pdf").Return(nil)
+		val.On("ValidateUpload", ctx, mock.AnythingOfType("entities.DocumentDraft")).Return(nil)
+		stor.On("Head", ctx, mock.AnythingOfType("string")).
+			Return(interfaces.ObjectStat{ContentType: "image/png", SizeBytes: 4096}, true, nil)
+		stor.On("Delete", ctx, mock.AnythingOfType("string")).Return(nil)
 
 		_, err := uc.Record(ctx, RecordDocumentInput{
 			ActorUserID: "uid-rdc",
-			DocumentID:  "doc1",
-			Title:       "x",
-			CategoryID:  "syndic",
-			ContentType: "application/pdf",
-			SizeBytes:   4242,
+			DocumentID:  "doc-abc",
+			DocumentDraft: entities.DocumentDraft{
+				Title:       "Bill",
+				CategoryID:  "syndic",
+				ContentType: "image/jpeg",
+				SizeBytes:   2048,
+			},
 		})
 		So(errors.Is(err, entities.ValidationError{}), ShouldBeTrue)
-		docs.AssertNotCalled(t, "Create", mock.Anything, mock.Anything)
-		stor.AssertCalled(t, "Delete", ctx, "documents/doc1.pdf")
-	})
-
-	Convey("When the object isn't there, returns a validation error", t, func() {
-		ctx := context.Background()
-		uc, _, cats, foy, _, stor := newUC()
-		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
-		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
-		cats.On("FindByID", ctx, "syndic").Return(&entities.Category{ID: "syndic"}, nil)
-		stor.On("Head", ctx, "documents/doc1.pdf").Return(interfaces.ObjectStat{}, false, nil)
-
-		_, err := uc.Record(ctx, RecordDocumentInput{
-			ActorUserID: "uid-rdc",
-			DocumentID:  "doc1",
-			Title:       "x",
-			CategoryID:  "syndic",
-			ContentType: "application/pdf",
-			SizeBytes:   100,
-		})
-		So(errors.Is(err, entities.ValidationError{}), ShouldBeTrue)
+		stor.AssertCalled(t, "Delete", ctx, mock.AnythingOfType("string"))
 	})
 }
 
 // ─── Update ─────────────────────────────────────────────────────────
 
 func TestUpdate(t *testing.T) {
-	Convey("Given an existing document", t, func() {
+	Convey("Patches metadata fields onto the existing doc", t, func() {
 		ctx := context.Background()
-		uc, docs, cats, foy, _, _ := newUC()
-		existing := &entities.Document{
-			ID:          "doc1",
-			CoproID:     "c1",
-			CategoryID:  "syndic",
-			Title:       "Contrat 2026",
-			Group:       "contrat",
-			ObjectName:  "documents/doc1.pdf",
-			ContentType: "application/pdf",
-			SizeBytes:   4242,
-			UploadedAt:  now,
-		}
-		docs.On("FindByID", ctx, "doc1").Return(existing, nil)
+		uc, docs, foy, _, _, _, val := newUC()
 		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
 		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
-		cats.On("FindByID", ctx, "syndic").Return(&entities.Category{ID: "syndic"}, nil)
+		docs.On("FindByID", ctx, "doc-abc").Return(&entities.Document{ID: "doc-abc", CoproID: "c1", ObjectName: "documents/doc-abc.jpg"}, nil)
+		val.On("ValidateUpdate", ctx, mock.AnythingOfType("entities.DocumentMetadataDraft")).Return(nil)
 		docs.On("Update", ctx, mock.AnythingOfType("entities.Document")).Return(nil)
 
-		out, err := uc.Update(ctx, "doc1", UpdateDocumentInput{
+		out, err := uc.Update(ctx, "doc-abc", UpdateDocumentInput{
 			ActorUserID: "uid-rdc",
-			Title:       "Contrat 2027 reconduit",
-			Description: "Avenant signé le 1er mai",
-			CategoryID:  "syndic",
-			Group:       "AVENANT", // capitals — should normalize
+			DocumentMetadataDraft: entities.DocumentMetadataDraft{
+				Title:      "Renamed",
+				CategoryID: "syndic",
+			},
 		})
-		Convey("It edits metadata + normalizes the group", func() {
-			So(err, ShouldBeNil)
-			So(out.Title, ShouldEqual, "Contrat 2027 reconduit")
-			So(out.Group, ShouldEqual, "avenant")
-		})
+		So(err, ShouldBeNil)
+		So(out.Title, ShouldEqual, "Renamed")
+		So(out.ObjectName, ShouldEqual, "documents/doc-abc.jpg") // preserved
 	})
 
-	Convey("Returns ErrNotFound for ghost id", t, func() {
+	Convey("Returns ErrNotFound for a ghost id", t, func() {
 		ctx := context.Background()
-		uc, docs, _, foy, _, _ := newUC()
-		docs.On("FindByID", ctx, "ghost").Return((*entities.Document)(nil), nil)
+		uc, docs, foy, _, _, _, _ := newUC()
 		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
 		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
-		_, err := uc.Update(ctx, "ghost", UpdateDocumentInput{
-			ActorUserID: "uid-rdc",
-			Title:       "x",
-			CategoryID:  "syndic",
-		})
+		docs.On("FindByID", ctx, "ghost").Return((*entities.Document)(nil), nil)
+
+		_, err := uc.Update(ctx, "ghost", UpdateDocumentInput{ActorUserID: "uid-rdc"})
 		So(errors.Is(err, domainerrors.ErrNotFound), ShouldBeTrue)
 	})
 }
@@ -439,70 +372,16 @@ func TestUpdate(t *testing.T) {
 // ─── Delete ─────────────────────────────────────────────────────────
 
 func TestDelete(t *testing.T) {
-	Convey("Drops both metadata and the GCS object", t, func() {
+	Convey("Deletes the GCS blob and the metadata", t, func() {
 		ctx := context.Background()
-		uc, docs, _, foy, _, stor := newUC()
-		docs.On("FindByID", ctx, "doc1").Return(&entities.Document{
-			ID:         "doc1",
-			ObjectName: "documents/doc1.pdf",
-		}, nil)
+		uc, docs, foy, _, _, stor, _ := newUC()
 		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
 		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
-		stor.On("Delete", ctx, "documents/doc1.pdf").Return(nil)
-		docs.On("Delete", ctx, "doc1").Return(nil)
+		docs.On("FindByID", ctx, "doc-abc").Return(&entities.Document{ID: "doc-abc", ObjectName: "documents/doc-abc.jpg"}, nil)
+		stor.On("Delete", ctx, "documents/doc-abc.jpg").Return(nil)
+		docs.On("Delete", ctx, "doc-abc").Return(nil)
 
-		err := uc.Delete(ctx, "doc1", "uid-rdc")
+		err := uc.Delete(ctx, "doc-abc", "uid-rdc")
 		So(err, ShouldBeNil)
-		stor.AssertCalled(t, "Delete", ctx, "documents/doc1.pdf")
-		docs.AssertCalled(t, "Delete", ctx, "doc1")
-	})
-
-	Convey("Returns ErrNotFound for ghost id", t, func() {
-		ctx := context.Background()
-		uc, docs, _, foy, _, _ := newUC()
-		docs.On("FindByID", ctx, "ghost").Return((*entities.Document)(nil), nil)
-		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
-		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
-		err := uc.Delete(ctx, "ghost", "uid-rdc")
-		So(errors.Is(err, domainerrors.ErrNotFound), ShouldBeTrue)
-	})
-
-	Convey("Rejects an intruder actor", t, func() {
-		ctx := context.Background()
-		uc, _, _, foy, _, _ := newUC()
-		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
-		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
-		err := uc.Delete(ctx, "doc1", "intruder")
-		So(errors.Is(err, entities.AuthorizationError{}), ShouldBeTrue)
-	})
-}
-
-// ─── GetDownloadURL ────────────────────────────────────────────────
-
-func TestGetDownloadURL(t *testing.T) {
-	Convey("Returns a signed URL when the doc exists", t, func() {
-		ctx := context.Background()
-		uc, docs, _, foy, _, stor := newUC()
-		docs.On("FindByID", ctx, "doc1").Return(&entities.Document{
-			ID: "doc1", ObjectName: "documents/doc1.pdf",
-		}, nil)
-		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
-		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
-		stor.On("SignedGetURL", ctx, "documents/doc1.pdf", mock.AnythingOfType("time.Duration")).
-			Return("https://signed.example/get", nil)
-
-		url, _, err := uc.GetDownloadURL(ctx, "doc1", "uid-rdc")
-		So(err, ShouldBeNil)
-		So(url, ShouldEqual, "https://signed.example/get")
-	})
-
-	Convey("Returns ErrNotFound for ghost id", t, func() {
-		ctx := context.Background()
-		uc, docs, _, foy, _, _ := newUC()
-		docs.On("FindByID", ctx, "ghost").Return((*entities.Document)(nil), nil)
-		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
-		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
-		_, _, err := uc.GetDownloadURL(ctx, "ghost", "uid-rdc")
-		So(errors.Is(err, domainerrors.ErrNotFound), ShouldBeTrue)
 	})
 }

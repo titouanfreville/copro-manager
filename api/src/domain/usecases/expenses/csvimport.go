@@ -315,26 +315,28 @@ func buildInput(raw rawRow, payerFoyerID string) (CreateInput, error) {
 	mode := mapRepartitionToMode(raw.Repartition)
 
 	return CreateInput{
-		Name:             strings.TrimSpace(raw.Item),
-		AmountCents:      amountCents,
-		Currency:         "EUR",
-		Date:             date,
-		PaymentDate:      paymentDate,
-		PayerFoyerID:     payerFoyerID,
-		CategoryID:       categoryID,
-		DistributionMode: mode,
-		ShareRDCCents:    rdcCents,
-		Share1erCents:    premierCents,
-		Note:             note,
+		ExpenseDraft: entities.ExpenseDraft{
+			Name:             strings.TrimSpace(raw.Item),
+			AmountCents:      amountCents,
+			Currency:         "EUR",
+			Date:             date,
+			PaymentDate:      paymentDate,
+			PayerFoyerID:     payerFoyerID,
+			CategoryID:       categoryID,
+			DistributionMode: mode,
+			ShareRDCCents:    rdcCents,
+			Share1erCents:    premierCents,
+			Note:             note,
+			// "Paiement complet (2 parties) = TRUE" on the source spreadsheet
+			// means both households already settled their share directly with
+			// the supplier — these expenses must NOT skew the running balance.
+			Settled: true,
+		},
 		// Preserve the historical split exactly. For tantieme rows this
 		// matters most: foyer parts may evolve later but the imported
 		// expense should still reflect the ratio in force when the bill
 		// was paid.
 		TrustExplicitShares: true,
-		// "Paiement complet (2 parties) = TRUE" on the source spreadsheet
-		// means both households already settled their share directly with
-		// the supplier — these expenses must NOT skew the running balance.
-		Settled: true,
 	}, nil
 }
 

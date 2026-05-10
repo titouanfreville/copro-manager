@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	"go.uber.org/zap"
 
+	"github.com/titouanfreville/copro-manager/api/src/adapters/validators"
 	"github.com/titouanfreville/copro-manager/api/src/domain/entities"
 	domainerrors "github.com/titouanfreville/copro-manager/api/src/domain/errors"
 	"github.com/titouanfreville/copro-manager/api/src/domain/interfaces"
@@ -216,6 +217,7 @@ func newUC() (*usecases, *mockExpensesStore, *mockFoyersStore, *mockCoprosStore,
 		copros:      cop,
 		categories:  cat,
 		storage:     stor,
+		validator:   validators.NewExpenses(),
 		now:         func() time.Time { return time.Date(2026, 5, 8, 0, 0, 0, 0, time.UTC) },
 	}
 	return uc, exp, foy, cop, cat, stor, atts
@@ -259,12 +261,14 @@ func TestUpdate(t *testing.T) {
 
 			updated, err := uc.Update(ctx, "e1", CreateInput{
 				ActorUserID:      "uid-rdc",
-				Name:             "Eau été révisée",
-				AmountCents:      12000,
-				Date:             existing.Date,
-				PayerFoyerID:     "1er",
-				CategoryID:       "eau",
-				DistributionMode: entities.DistributionModeEqual,
+				ExpenseDraft: entities.ExpenseDraft{
+					Name:             "Eau été révisée",
+					AmountCents:      12000,
+					Date:             existing.Date,
+					PayerFoyerID:     "1er",
+					CategoryID:       "eau",
+					DistributionMode: entities.DistributionModeEqual,
+				},
 			})
 
 			Convey("It writes the new fields and refreshes UpdatedAt", func() {
@@ -283,12 +287,14 @@ func TestUpdate(t *testing.T) {
 		Convey("When the actor is not a member of either foyer", func() {
 			_, err := uc.Update(ctx, "e1", CreateInput{
 				ActorUserID:      "intruder",
-				Name:             "Eau été",
-				AmountCents:      10000,
-				Date:             existing.Date,
-				PayerFoyerID:     "rdc",
-				CategoryID:       "eau",
-				DistributionMode: entities.DistributionModeEqual,
+				ExpenseDraft: entities.ExpenseDraft{
+					Name:             "Eau été",
+					AmountCents:      10000,
+					Date:             existing.Date,
+					PayerFoyerID:     "rdc",
+					CategoryID:       "eau",
+					DistributionMode: entities.DistributionModeEqual,
+				},
 			})
 
 			Convey("It returns an authorization error", func() {
@@ -309,12 +315,14 @@ func TestUpdate(t *testing.T) {
 		expStore.On("FindByID", ctx, "ghost").Return((*entities.Expense)(nil), nil)
 
 		_, err := uc.Update(ctx, "ghost", CreateInput{
-			Name:             "x",
-			AmountCents:      100,
-			Date:             time.Now(),
-			PayerFoyerID:     "rdc",
-			CategoryID:       "eau",
-			DistributionMode: entities.DistributionModeEqual,
+			ExpenseDraft: entities.ExpenseDraft{
+				Name:             "x",
+				AmountCents:      100,
+				Date:             time.Now(),
+				PayerFoyerID:     "rdc",
+				CategoryID:       "eau",
+				DistributionMode: entities.DistributionModeEqual,
+			},
 		})
 		Convey("It returns ErrNotFound", func() {
 			So(errors.Is(err, domainerrors.ErrNotFound), ShouldBeTrue)
@@ -335,14 +343,16 @@ func TestCreatePending(t *testing.T) {
 
 		out, err := uc.Create(ctx, CreateInput{
 			ActorUserID:      "uid-rdc",
-			Name:             "Eau (à compléter)",
-			AmountCents:      0,
-			Date:             time.Date(2026, 5, 8, 0, 0, 0, 0, time.UTC),
-			PayerFoyerID:     "rdc",
-			CategoryID:       "eau",
-			DistributionMode: entities.DistributionModeEqual,
-			AmountPending:    true,
-			TemplateID:       "tpl-water",
+			ExpenseDraft: entities.ExpenseDraft{
+				Name:             "Eau (à compléter)",
+				AmountCents:      0,
+				Date:             time.Date(2026, 5, 8, 0, 0, 0, 0, time.UTC),
+				PayerFoyerID:     "rdc",
+				CategoryID:       "eau",
+				DistributionMode: entities.DistributionModeEqual,
+				AmountPending:    true,
+				TemplateID:       "tpl-water",
+			},
 		})
 
 		Convey("It stores the row with shares 0/0 and the template lineage", func() {
@@ -360,13 +370,15 @@ func TestCreatePending(t *testing.T) {
 		uc, _, _, _, _, _, _ := newUC()
 		_, err := uc.Create(ctx, CreateInput{
 			ActorUserID:      "uid-rdc",
-			Name:             "Eau",
-			AmountCents:      5000,
-			Date:             time.Date(2026, 5, 8, 0, 0, 0, 0, time.UTC),
-			PayerFoyerID:     "rdc",
-			CategoryID:       "eau",
-			DistributionMode: entities.DistributionModeEqual,
-			AmountPending:    true,
+			ExpenseDraft: entities.ExpenseDraft{
+				Name:             "Eau",
+				AmountCents:      5000,
+				Date:             time.Date(2026, 5, 8, 0, 0, 0, 0, time.UTC),
+				PayerFoyerID:     "rdc",
+				CategoryID:       "eau",
+				DistributionMode: entities.DistributionModeEqual,
+				AmountPending:    true,
+			},
 		})
 		So(errors.Is(err, entities.ValidationError{}), ShouldBeTrue)
 	})
@@ -399,14 +411,16 @@ func TestUpdateClearsPending(t *testing.T) {
 
 		out, err := uc.Update(ctx, "e1", CreateInput{
 			ActorUserID:      "uid-rdc",
-			Name:             "Eau",
-			AmountCents:      8400,
-			Date:             existing.Date,
-			PayerFoyerID:     "rdc",
-			CategoryID:       "eau",
-			DistributionMode: entities.DistributionModeEqual,
-			// Caller no longer flags pending; shares should be recomputed.
-			AmountPending: false,
+			ExpenseDraft: entities.ExpenseDraft{
+				Name:             "Eau",
+				AmountCents:      8400,
+				Date:             existing.Date,
+				PayerFoyerID:     "rdc",
+				CategoryID:       "eau",
+				DistributionMode: entities.DistributionModeEqual,
+				// Caller no longer flags pending; shares should be recomputed.
+				AmountPending: false,
+			},
 		})
 
 		Convey("Pending clears and shares recompute from the new amount", func() {
@@ -543,8 +557,10 @@ func TestComputeWaterShares(t *testing.T) {
 		mt.On("FindPriorPeriod", ctx, "2026-06").Return(prev, nil)
 
 		shareRDC, share1er, err := uc.computeWaterShares(ctx, CreateInput{
-			AmountCents:        16430,
-			MeterReadingPeriod: "2026-06",
+			ExpenseDraft: entities.ExpenseDraft{
+				AmountCents:        16430,
+				MeterReadingPeriod: "2026-06",
+			},
 		}, rdc)
 
 		Convey("It splits 50/50 (equal deltas, common goes half-half)", func() {
@@ -564,8 +580,10 @@ func TestComputeWaterShares(t *testing.T) {
 		mt.On("FindPriorPeriod", ctx, "2026-05").Return(nil, nil)
 
 		_, _, err := uc.computeWaterShares(ctx, CreateInput{
-			AmountCents:        10000,
-			MeterReadingPeriod: "2026-05",
+			ExpenseDraft: entities.ExpenseDraft{
+				AmountCents:        10000,
+				MeterReadingPeriod: "2026-05",
+			},
 		}, rdc)
 		So(err, ShouldNotBeNil)
 	})
@@ -580,8 +598,10 @@ func TestComputeWaterShares(t *testing.T) {
 		mt.On("FindByPeriod", ctx, "2026-06").Return(curr, nil)
 		mt.On("FindPriorPeriod", ctx, "2026-06").Return(prev, nil)
 		_, _, err := uc.computeWaterShares(ctx, CreateInput{
-			AmountCents:        10000,
-			MeterReadingPeriod: "2026-06",
+			ExpenseDraft: entities.ExpenseDraft{
+				AmountCents:        10000,
+				MeterReadingPeriod: "2026-06",
+			},
 		}, rdc)
 		So(err, ShouldNotBeNil)
 	})
@@ -596,8 +616,10 @@ func TestComputeWaterShares(t *testing.T) {
 		mt.On("FindByPeriod", ctx, "2026-06").Return(same, nil)
 		mt.On("FindPriorPeriod", ctx, "2026-06").Return(prev, nil)
 		_, _, err := uc.computeWaterShares(ctx, CreateInput{
-			AmountCents:        10000,
-			MeterReadingPeriod: "2026-06",
+			ExpenseDraft: entities.ExpenseDraft{
+				AmountCents:        10000,
+				MeterReadingPeriod: "2026-06",
+			},
 		}, rdc)
 		So(err, ShouldNotBeNil)
 	})
