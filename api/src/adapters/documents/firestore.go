@@ -33,6 +33,7 @@ type documentDoc struct {
 	UploadedAt       time.Time `firestore:"uploaded_at"`
 	UploadedBy       string    `firestore:"uploaded_by"`
 	LinkedExpenseID  string    `firestore:"linked_expense_id,omitempty"`
+	LinkedContractID string    `firestore:"linked_contract_id,omitempty"`
 }
 
 type Store struct {
@@ -147,6 +148,28 @@ func (s *Store) CountByLinkedExpense(ctx context.Context, expenseID string) (int
 	return count, nil
 }
 
+// CountByLinkedContract counts every document attached to a given
+// contract.
+func (s *Store) CountByLinkedContract(ctx context.Context, contractID string) (int, error) {
+	iter := s.client.Collection(collection).
+		Where("linked_contract_id", "==", contractID).
+		Documents(ctx)
+	defer iter.Stop()
+
+	count := 0
+	for {
+		_, err := iter.Next()
+		if errors.Is(err, iterator.Done) {
+			break
+		}
+		if err != nil {
+			return 0, fmt.Errorf("documents: count by linked contract: %w", err)
+		}
+		count++
+	}
+	return count, nil
+}
+
 // ListByLinkedExpense returns every document linked to the given expense,
 // ordered client-side by uploaded_at asc. Equality on a single field uses
 // Firestore's automatic single-field index — no composite needed.
@@ -192,6 +215,7 @@ func docToEntity(d documentDoc) entities.Document {
 		UploadedAt:       d.UploadedAt,
 		UploadedBy:       d.UploadedBy,
 		LinkedExpenseID:  d.LinkedExpenseID,
+		LinkedContractID: d.LinkedContractID,
 	}
 }
 
@@ -210,5 +234,6 @@ func entityToDoc(d entities.Document) documentDoc {
 		UploadedAt:       d.UploadedAt,
 		UploadedBy:       d.UploadedBy,
 		LinkedExpenseID:  d.LinkedExpenseID,
+		LinkedContractID: d.LinkedContractID,
 	}
 }

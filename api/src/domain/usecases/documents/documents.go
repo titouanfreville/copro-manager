@@ -54,6 +54,10 @@ type RequestUploadInput struct {
 	// attachment rather than a standalone archive entry. The expense must
 	// exist; the per-expense cap (MaxAttachmentsPerExpense) is enforced.
 	LinkedExpenseID string
+	// LinkedContractID, when set, pins the document to a Contract — used
+	// for the contract PDF, addenda, attestations. Independent of
+	// LinkedExpenseID; both can coexist on the same Document.
+	LinkedContractID string
 }
 
 // RequestUploadResult is what the route returns to the browser.
@@ -80,16 +84,21 @@ type RecordDocumentInput struct {
 	// the persisted record carries the expense link. The cap is re-checked
 	// here defensively (RequestUpload is best-effort).
 	LinkedExpenseID string
+	// LinkedContractID mirrors the value declared at RequestUpload time
+	// — the contract this document belongs to (e.g. the contract PDF
+	// itself or an addendum).
+	LinkedContractID string
 }
 
 // UpdateDocumentInput is for editing the metadata of an existing doc.
 // File replacement is out of scope for v1.
 type UpdateDocumentInput struct {
-	ActorUserID string
-	Title       string
-	Description string
-	CategoryID  string
-	Group       string
+	ActorUserID      string
+	Title            string
+	Description      string
+	CategoryID       string
+	Group            string
+	LinkedContractID string
 }
 
 // Usecases is the documents domain contract.
@@ -115,6 +124,7 @@ type usecases struct {
 	foyers     interfaces.FoyersStore
 	copros     interfaces.CoprosStore
 	expenses   interfaces.ExpensesStore
+	contracts  interfaces.ContractsStore
 	storage    interfaces.StorageService
 	now        func() time.Time
 }
@@ -127,6 +137,7 @@ func New(
 	foyers interfaces.FoyersStore,
 	copros interfaces.CoprosStore,
 	expenses interfaces.ExpensesStore,
+	contracts interfaces.ContractsStore,
 	storage interfaces.StorageService,
 ) Usecases {
 	return &usecases{
@@ -136,6 +147,7 @@ func New(
 		foyers:     foyers,
 		copros:     copros,
 		expenses:   expenses,
+		contracts:  contracts,
 		storage:    storage,
 		now:        time.Now,
 	}
@@ -174,6 +186,9 @@ func (uc *usecases) RequestUploadURL(ctx context.Context, in RequestUploadInput)
 	}
 	exp, err := uc.checkLinkedExpense(ctx, in.LinkedExpenseID)
 	if err != nil {
+		return nil, err
+	}
+	if err := uc.checkLinkedContract(ctx, in.LinkedContractID); err != nil {
 		return nil, err
 	}
 	uc.fillLinkedDefaults(&in.Title, &in.CategoryID, exp)
@@ -231,6 +246,9 @@ func (uc *usecases) Record(ctx context.Context, in RecordDocumentInput) (*entiti
 	if err != nil {
 		return nil, err
 	}
+	if err := uc.checkLinkedContract(ctx, in.LinkedContractID); err != nil {
+		return nil, err
+	}
 	uc.fillLinkedDefaults(&in.Title, &in.CategoryID, exp)
 	if err := uc.validateTitle(in.Title); err != nil {
 		return nil, err
@@ -284,6 +302,7 @@ func (uc *usecases) Record(ctx context.Context, in RecordDocumentInput) (*entiti
 		UploadedAt:       now,
 		UploadedBy:       in.ActorUserID,
 		LinkedExpenseID:  strings.TrimSpace(in.LinkedExpenseID),
+		LinkedContractID: strings.TrimSpace(in.LinkedContractID),
 	}
 	if err := uc.documents.Create(ctx, d); err != nil {
 		log.Error("store create failed", zap.Error(err))
@@ -316,11 +335,15 @@ func (uc *usecases) Update(ctx context.Context, id string, in UpdateDocumentInpu
 	if err := uc.checkCategory(ctx, in.CategoryID); err != nil {
 		return nil, err
 	}
+	if err := uc.checkLinkedContract(ctx, in.LinkedContractID); err != nil {
+		return nil, err
+	}
 
 	existing.Title = strings.TrimSpace(in.Title)
 	existing.Description = truncate(strings.TrimSpace(in.Description), descriptionMaxLen)
 	existing.CategoryID = in.CategoryID
 	existing.Group = normalizeGroup(in.Group)
+	existing.LinkedContractID = strings.TrimSpace(in.LinkedContractID)
 
 	if err := uc.documents.Update(ctx, *existing); err != nil {
 		log.Error("update failed", zap.Error(err))
@@ -490,6 +513,30 @@ func (uc *usecases) checkLinkedExpense(ctx context.Context, expenseID string) (*
 		}
 	}
 	return exp, nil
+}
+
+// checkLinkedContract verifies that a contract-attach upload references
+// a real contract. No cap (a single contract can have arbitrarily many
+// docs — invoices, addenda, attestations). Empty input is a no-op.
+func (uc *usecases) checkLinkedContract(ctx context.Context, contractID string) error {
+	id := strings.TrimSpace(contractID)
+	if id == "" {
+		return nil
+	}
+	if !isSafeID(id) {
+		return entities.ValidationError{Key: "linked_contract_id", Message: "invalid id"}
+	}
+	if uc.contracts == nil {
+		return fmt.Errorf("documents: contracts store not configured")
+	}
+	c, err := uc.contracts.FindByID(ctx, id)
+	if err != nil {
+		return fmt.Errorf("find contract: %w", err)
+	}
+	if c == nil {
+		return fmt.Errorf("%w: contract %q", domainerrors.ErrNotFound, id)
+	}
+	return nil
 }
 
 // fillLinkedDefaults supplies sensible defaults on the per-expense attach

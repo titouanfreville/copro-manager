@@ -7,6 +7,7 @@ import (
 
 	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/alerts"
 	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/categories"
+	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/contracts"
 	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/documents"
 	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/expenses"
 	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/foyers"
@@ -30,6 +31,7 @@ type Usecases struct {
 	Templates   templates.Usecases
 	Settlements settlements.Usecases
 	Documents   documents.Usecases
+	Contracts   contracts.Usecases
 	Alerts      alerts.Usecases
 	Push        push.Usecases
 	Meters      meters.Usecases
@@ -46,6 +48,7 @@ func New(
 	initTemplates templates.Usecases,
 	initSettlements settlements.Usecases,
 	initDocuments documents.Usecases,
+	initContracts contracts.Usecases,
 	initAlerts alerts.Usecases,
 	initPush push.Usecases,
 	initMeters meters.Usecases,
@@ -61,6 +64,7 @@ func New(
 		Templates:   initTemplates,
 		Settlements: initSettlements,
 		Documents:   initDocuments,
+		Contracts:   initContracts,
 		Alerts:      initAlerts,
 		Push:        initPush,
 		Meters:      initMeters,

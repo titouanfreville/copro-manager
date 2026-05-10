@@ -61,18 +61,20 @@ type usecases struct {
 	expenses  interfaces.ExpensesStore
 	templates interfaces.TemplatesStore
 	documents interfaces.DocumentsStore
+	contracts interfaces.ContractsStore
 	foyers    interfaces.FoyersStore
 }
 
 // New builds a categories usecase. The reference-count check on Delete
-// queries expenses + templates + documents — those stores are injected so
-// the usecase doesn't reach across packages directly.
+// queries expenses + templates + documents + contracts — those stores
+// are injected so the usecase doesn't reach across packages directly.
 func New(
 	logger *zap.Logger,
 	store interfaces.CategoriesStore,
 	expenses interfaces.ExpensesStore,
 	templates interfaces.TemplatesStore,
 	documents interfaces.DocumentsStore,
+	contracts interfaces.ContractsStore,
 	foyers interfaces.FoyersStore,
 ) Usecases {
 	return &usecases{
@@ -81,6 +83,7 @@ func New(
 		expenses:  expenses,
 		templates: templates,
 		documents: documents,
+		contracts: contracts,
 		foyers:    foyers,
 	}
 }
@@ -238,7 +241,11 @@ func (uc *usecases) Delete(ctx context.Context, id, actorUserID string) error {
 	if err != nil {
 		return fmt.Errorf("count documents: %w", err)
 	}
-	if total := expCount + tplCount + docCount; total > 0 {
+	contractCount, err := uc.contracts.CountByCategory(ctx, id)
+	if err != nil {
+		return fmt.Errorf("count contracts: %w", err)
+	}
+	if total := expCount + tplCount + docCount + contractCount; total > 0 {
 		parts := []string{}
 		if expCount > 0 {
 			parts = append(parts, fmt.Sprintf("%d dépense(s)", expCount))
@@ -248,6 +255,9 @@ func (uc *usecases) Delete(ctx context.Context, id, actorUserID string) error {
 		}
 		if docCount > 0 {
 			parts = append(parts, fmt.Sprintf("%d document(s)", docCount))
+		}
+		if contractCount > 0 {
+			parts = append(parts, fmt.Sprintf("%d contrat(s)", contractCount))
 		}
 		return entities.ValidationError{
 			Key:     "category",

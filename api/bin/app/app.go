@@ -13,6 +13,7 @@ import (
 	alertsadapter "github.com/titouanfreville/copro-manager/api/src/adapters/alerts"
 	authadapter "github.com/titouanfreville/copro-manager/api/src/adapters/auth"
 	categoriesadapter "github.com/titouanfreville/copro-manager/api/src/adapters/categories"
+	contractsadapter "github.com/titouanfreville/copro-manager/api/src/adapters/contracts"
 	coprosadapter "github.com/titouanfreville/copro-manager/api/src/adapters/copros"
 	documentsadapter "github.com/titouanfreville/copro-manager/api/src/adapters/documents"
 	expensesadapter "github.com/titouanfreville/copro-manager/api/src/adapters/expenses"
@@ -28,6 +29,7 @@ import (
 	"github.com/titouanfreville/copro-manager/api/src/domain/usecases"
 	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/alerts"
 	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/categories"
+	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/contracts"
 	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/documents"
 	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/expenses"
 	"github.com/titouanfreville/copro-manager/api/src/domain/usecases/foyers"
@@ -124,6 +126,7 @@ func main() {
 			fx.Annotate(templatesadapter.NewStore, fx.As(new(interfaces.TemplatesStore))),
 			fx.Annotate(settlementsadapter.NewStore, fx.As(new(interfaces.SettlementsStore))),
 			fx.Annotate(documentsadapter.NewStore, fx.As(new(interfaces.DocumentsStore))),
+			fx.Annotate(contractsadapter.NewStore, fx.As(new(interfaces.ContractsStore))),
 			fx.Annotate(alertsadapter.NewStore, fx.As(new(interfaces.AlertsStore))),
 			fx.Annotate(pushadapter.NewStore, fx.As(new(interfaces.PushSubscriptionsStore))),
 			fx.Annotate(metersadapter.NewStore, fx.As(new(interfaces.MetersStore))),
@@ -143,10 +146,12 @@ func main() {
 			func(a alerts.Usecases) settlements.AlertsHook { return a },
 			func(a alerts.Usecases) meters.AlertsHook { return a },
 			func(d documents.Usecases) expenses.DocumentsHook { return d },
+			func(a alerts.Usecases) contracts.AlertsHook { return a },
 			expenses.New,
 			templates.New,
 			settlements.New,
 			documents.New,
+			contracts.New,
 			pushuc.New,
 			meters.New,
 			usecases.New,

@@ -31,4 +31,11 @@ type DocumentsStore interface {
 	// expense, ordered by uploaded_at asc. Powers the migration check
 	// (skip-if-already-migrated) and the per-expense download path.
 	ListByLinkedExpense(ctx context.Context, expenseID string) ([]entities.Document, error)
+
+	// CountByLinkedContract returns the number of documents pinned to
+	// the given contract. Used by the contracts-delete cascade
+	// (informational — the cascade still proceeds; the delete does NOT
+	// remove the linked docs, just the back-reference goes stale until
+	// the user re-links them).
+	CountByLinkedContract(ctx context.Context, contractID string) (int, error)
 }

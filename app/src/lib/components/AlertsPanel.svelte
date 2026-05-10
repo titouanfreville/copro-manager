@@ -63,6 +63,8 @@
 				return 'Solde à équilibrer';
 			case 'monthly_meter_reading':
 				return 'Relevé de compteur';
+			case 'contract_expiring':
+				return 'Contrat à renouveler';
 		}
 	}
 
@@ -100,6 +102,14 @@
 			case 'monthly_meter_reading': {
 				const period = String(p.period ?? '');
 				return `Relevé attendu pour ${period}.`;
+			}
+			case 'contract_expiring': {
+				const name = String(p.contract_name ?? '?');
+				const endRaw = String(p.end_date ?? '');
+				const end = endRaw ? new Date(endRaw) : null;
+				const endLabel =
+					end && !Number.isNaN(end.getTime()) ? end.toLocaleDateString('fr-FR') : endRaw;
+				return `« ${name} » expire le ${endLabel}.`;
 			}
 		}
 	}

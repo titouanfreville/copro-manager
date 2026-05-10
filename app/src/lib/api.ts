@@ -152,7 +152,8 @@ export type AlertKind =
   | "missing_receipt"
   | "peer_expense_added"
   | "balance_seasonal"
-  | "monthly_meter_reading";
+  | "monthly_meter_reading"
+  | "contract_expiring";
 
 export interface Alert {
   id: string;
@@ -192,6 +193,7 @@ export interface Document {
   uploaded_at: string;
   uploaded_by: string;
   linked_expense_id?: string;
+  linked_contract_id?: string;
 }
 
 export interface CreateDocumentInput {
@@ -199,6 +201,66 @@ export interface CreateDocumentInput {
   description?: string;
   category_id: string;
   group?: string;
+  linked_contract_id?: string;
+}
+
+// ─── Contracts ──────────────────────────────────────────────────────
+
+export type ContractStatus = "active" | "expired" | "cancelled";
+
+export interface Society {
+  name: string;
+  phone?: string;
+  email?: string;
+  website?: string;
+  address?: string;
+}
+
+export interface Contact {
+  name?: string;
+  role?: string;
+  phone?: string;
+  email?: string;
+}
+
+/**
+ * A long-lived service agreement bound to the copro: insurance, syndic,
+ * energy, maintenance. Two contracts with the same provider duplicate
+ * the inline society fields — acceptable at our scale.
+ *
+ * Linked Documents back-reference via Document.linked_contract_id; the
+ * optional ExpenseTemplate link drives recurring billing.
+ */
+export interface Contract {
+  id: string;
+  copro_id: string;
+  name: string;
+  category_id: string;
+  society: Society;
+  contact?: Contact;
+  start_date?: string;
+  end_date?: string;
+  amount_cents?: number;
+  billing_frequency?: Frequency;
+  template_id?: string;
+  status: ContractStatus;
+  note?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ContractInput {
+  name: string;
+  category_id: string;
+  society: Society;
+  contact?: Contact;
+  start_date?: string;
+  end_date?: string;
+  amount_cents?: number;
+  billing_frequency?: Frequency;
+  template_id?: string;
+  status?: ContractStatus;
+  note?: string;
 }
 
 /**

@@ -52,4 +52,9 @@ type Document struct {
 	// the hook for a future "link existing document to expense" flow
 	// without a schema migration.
 	LinkedExpenseID string `json:"linked_expense_id,omitempty"`
+	// LinkedContractID pins the document to a Contract (the contract PDF,
+	// addenda, attestations). Mutually orthogonal with LinkedExpenseID —
+	// a single doc can be linked to both an expense (e.g. a renewal
+	// invoice) and the contract that produced it.
+	LinkedContractID string `json:"linked_contract_id,omitempty"`
 }

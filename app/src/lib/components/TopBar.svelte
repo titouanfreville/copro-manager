@@ -26,6 +26,7 @@
 			{ href: '/expenses', label: 'Dépenses' },
 			{ href: '/templates', label: 'Modèles' },
 			{ href: '/meters', label: 'Compteurs' },
+			{ href: '/contracts', label: 'Contrats' },
 			{ href: '/documents', label: 'Documents' },
 			{ href: '/categories', label: 'Catégories' }
 		];

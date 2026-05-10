@@ -16,6 +16,8 @@ import type {
   Alert,
   Attachment,
   Category,
+  Contract,
+  ContractStatus,
   Document,
   ExpenseTemplate,
   Expense,
@@ -304,8 +306,103 @@ export function subscribeDocuments(
           typeof d.linked_expense_id === "string" && d.linked_expense_id
             ? d.linked_expense_id
             : undefined,
+        linked_contract_id:
+          typeof d.linked_contract_id === "string" && d.linked_contract_id
+            ? d.linked_contract_id
+            : undefined,
       }) satisfies Document,
     (rows) => rows.sort((a, b) => b.uploaded_at.localeCompare(a.uploaded_at)),
+    onData,
+    onError,
+  );
+}
+
+// ─── Contracts ──────────────────────────────────────────────────────
+//
+// Service agreements bound to the copro (insurance, syndic, energy,
+// maintenance, …). Both foyers see the full list; mutations still flow
+// through the API so server-side validation is the single source of
+// truth.
+
+const KNOWN_CONTRACT_STATUSES: ReadonlyArray<ContractStatus> = [
+  "active",
+  "expired",
+  "cancelled",
+];
+function asContractStatus(v: unknown): ContractStatus {
+  return KNOWN_CONTRACT_STATUSES.find((s) => s === v) ?? "active";
+}
+
+export function subscribeContracts(
+  onData: (rows: Contract[]) => void,
+  onError?: (err: Error) => void,
+): Unsubscribe {
+  return subscribe<Contract>(
+    "contracts",
+    (snap, d) => {
+      const society = (d.society ?? {}) as SnapData;
+      const contact = (d.contact ?? {}) as SnapData;
+      return {
+        id: snap.id,
+        copro_id: String(d.copro_id ?? ""),
+        name: String(d.name ?? ""),
+        category_id: String(d.category_id ?? ""),
+        society: {
+          name: String(society.name ?? ""),
+          phone:
+            typeof society.phone === "string" && society.phone
+              ? society.phone
+              : undefined,
+          email:
+            typeof society.email === "string" && society.email
+              ? society.email
+              : undefined,
+          website:
+            typeof society.website === "string" && society.website
+              ? society.website
+              : undefined,
+          address:
+            typeof society.address === "string" && society.address
+              ? society.address
+              : undefined,
+        },
+        contact:
+          contact.name || contact.role || contact.phone || contact.email
+            ? {
+                name:
+                  typeof contact.name === "string" && contact.name
+                    ? contact.name
+                    : undefined,
+                role:
+                  typeof contact.role === "string" && contact.role
+                    ? contact.role
+                    : undefined,
+                phone:
+                  typeof contact.phone === "string" && contact.phone
+                    ? contact.phone
+                    : undefined,
+                email:
+                  typeof contact.email === "string" && contact.email
+                    ? contact.email
+                    : undefined,
+              }
+            : undefined,
+        start_date: isoOrUndef(d.start_date),
+        end_date: isoOrUndef(d.end_date),
+        amount_cents:
+          typeof d.amount_cents === "number" ? Number(d.amount_cents) : undefined,
+        billing_frequency: asFrequency(d.billing_frequency),
+        template_id:
+          typeof d.template_id === "string" && d.template_id
+            ? d.template_id
+            : undefined,
+        status: asContractStatus(d.status),
+        note: typeof d.note === "string" && d.note ? d.note : undefined,
+        created_at: isoOf(d.created_at),
+        updated_at: isoOf(d.updated_at),
+      } satisfies Contract;
+    },
+    (rows) => rows.sort((a, b) => a.name.localeCompare(b.name, "fr")),
     onData,
     onError,
   );
@@ -380,7 +477,8 @@ function decodeAlertSnapshot(snap: {
       kind !== "missing_receipt" &&
       kind !== "peer_expense_added" &&
       kind !== "balance_seasonal" &&
-      kind !== "monthly_meter_reading"
+      kind !== "monthly_meter_reading" &&
+      kind !== "contract_expiring"
     ) {
       continue;
     }

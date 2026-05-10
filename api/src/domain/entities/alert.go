@@ -31,6 +31,14 @@ const (
 	// Recipient: both foyers (water consumption is shared — either
 	// member can act). Auto-resolves when the reading lands.
 	AlertKindMonthlyMeterReading AlertKind = "monthly_meter_reading"
+
+	// AlertKindContractExpiring fires once per contract when its
+	// end_date enters the ContractExpiringSoonDays window. Recipient:
+	// both foyers (the contract binds the building, not a household).
+	// Dedupe key includes the contract id only — no stages — so the
+	// alert is one-shot per contract until end_date is renewed
+	// (storing a new end_date past the window resets the dedupe).
+	AlertKindContractExpiring AlertKind = "contract_expiring"
 )
 
 // IsKnownAlertKind reports whether the value is one of the supported kinds.
@@ -38,7 +46,7 @@ func IsKnownAlertKind(k AlertKind) bool {
 	switch k {
 	case AlertKindPendingCompletion, AlertKindMissingReceipt,
 		AlertKindPeerExpenseAdded, AlertKindBalanceSeasonal,
-		AlertKindMonthlyMeterReading:
+		AlertKindMonthlyMeterReading, AlertKindContractExpiring:
 		return true
 	}
 	return false
@@ -107,6 +115,13 @@ func DedupeKeyBalanceSeasonal(year int, half string) string {
 // idempotency works the same as balance_seasonal.
 func DedupeKeyMonthlyMeterReading(period string) string {
 	return fmt.Sprintf("%s:%s", AlertKindMonthlyMeterReading, period)
+}
+
+// DedupeKeyContractExpiring: one alert per contract per end_date. The
+// end_date suffix means renewing a contract (new end_date) yields a
+// fresh dedupe key — the next 30-day window will fire again.
+func DedupeKeyContractExpiring(contractID string, endDate time.Time) string {
+	return fmt.Sprintf("%s:%s:%s", AlertKindContractExpiring, contractID, endDate.Format("2006-01-02"))
 }
 
 // MissingReceiptStage computes the stage label for an expense aged

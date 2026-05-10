@@ -57,6 +57,10 @@ func (m *mockDocumentsStore) ListByLinkedExpense(ctx context.Context, expenseID 
 	}
 	return nil, args.Error(1)
 }
+func (m *mockDocumentsStore) CountByLinkedContract(ctx context.Context, contractID string) (int, error) {
+	args := m.Called(ctx, contractID)
+	return args.Int(0), args.Error(1)
+}
 
 type mockCategoriesStore struct{ mock.Mock }
 

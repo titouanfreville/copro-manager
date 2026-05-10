@@ -62,6 +62,11 @@ func (transport *API) initRoutes(r chi.Router) {
 		authed.Delete("/documents/{id}", transport.endpoints.DeleteDocument)
 		authed.Get("/documents/{id}/download-url", transport.endpoints.GetDocumentDownloadURL)
 
+		authed.Get("/contracts", transport.endpoints.ListContracts)
+		authed.Post("/contracts", transport.endpoints.CreateContract)
+		authed.Patch("/contracts/{id}", transport.endpoints.UpdateContract)
+		authed.Delete("/contracts/{id}", transport.endpoints.DeleteContract)
+
 		authed.Get("/meters", transport.endpoints.ListMeters)
 		authed.Post("/meters", transport.endpoints.CreateMeter)
 		authed.Get("/meters/{period}", transport.endpoints.GetMeter)

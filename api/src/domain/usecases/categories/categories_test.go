@@ -131,6 +131,10 @@ func (m *mockDocumentsStore) ListByLinkedExpense(ctx context.Context, expenseID 
 	}
 	return nil, args.Error(1)
 }
+func (m *mockDocumentsStore) CountByLinkedContract(ctx context.Context, contractID string) (int, error) {
+	args := m.Called(ctx, contractID)
+	return args.Int(0), args.Error(1)
+}
 
 type mockFoyersStore struct{ mock.Mock }
 
@@ -164,11 +168,42 @@ var (
 	premier = &entities.Foyer{ID: "1er", Floor: entities.FoyerFloor1er, MemberIDs: []string{"uid-1er"}}
 )
 
-func newUC() (*usecases, *mockCategoriesStore, *mockExpensesStore, *mockTemplatesStore, *mockDocumentsStore, *mockFoyersStore) {
+type mockContractsStore struct{ mock.Mock }
+
+func (m *mockContractsStore) List(ctx context.Context) ([]entities.Contract, error) {
+	args := m.Called(ctx)
+	if v := args.Get(0); v != nil {
+		return v.([]entities.Contract), args.Error(1)
+	}
+	return nil, args.Error(1)
+}
+func (m *mockContractsStore) FindByID(ctx context.Context, id string) (*entities.Contract, error) {
+	args := m.Called(ctx, id)
+	if v := args.Get(0); v != nil {
+		return v.(*entities.Contract), args.Error(1)
+	}
+	return nil, args.Error(1)
+}
+func (m *mockContractsStore) Create(ctx context.Context, c entities.Contract) error {
+	return m.Called(ctx, c).Error(0)
+}
+func (m *mockContractsStore) Update(ctx context.Context, c entities.Contract) error {
+	return m.Called(ctx, c).Error(0)
+}
+func (m *mockContractsStore) Delete(ctx context.Context, id string) error {
+	return m.Called(ctx, id).Error(0)
+}
+func (m *mockContractsStore) CountByCategory(ctx context.Context, categoryID string) (int, error) {
+	args := m.Called(ctx, categoryID)
+	return args.Int(0), args.Error(1)
+}
+
+func newUC() (*usecases, *mockCategoriesStore, *mockExpensesStore, *mockTemplatesStore, *mockDocumentsStore, *mockContractsStore, *mockFoyersStore) {
 	cat := &mockCategoriesStore{}
 	exp := &mockExpensesStore{}
 	tpl := &mockTemplatesStore{}
 	doc := &mockDocumentsStore{}
+	con := &mockContractsStore{}
 	foy := &mockFoyersStore{}
 	uc := &usecases{
 		logger:    zap.NewNop(),
@@ -176,9 +211,10 @@ func newUC() (*usecases, *mockCategoriesStore, *mockExpensesStore, *mockTemplate
 		expenses:  exp,
 		templates: tpl,
 		documents: doc,
+		contracts: con,
 		foyers:    foy,
 	}
-	return uc, cat, exp, tpl, doc, foy
+	return uc, cat, exp, tpl, doc, con, foy
 }
 
 // ─── Create ─────────────────────────────────────────────────────────
@@ -186,7 +222,7 @@ func newUC() (*usecases, *mockCategoriesStore, *mockExpensesStore, *mockTemplate
 func TestCreate(t *testing.T) {
 	Convey("Given a valid name from a foyer member", t, func() {
 		ctx := context.Background()
-		uc, cat, _, _, _, foy := newUC()
+		uc, cat, _, _, _, _, foy := newUC()
 		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
 		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
 		cat.On("List", ctx).Return([]entities.Category{}, nil)
@@ -207,7 +243,7 @@ func TestCreate(t *testing.T) {
 
 	Convey("Rejects a duplicate name (case-insensitive)", t, func() {
 		ctx := context.Background()
-		uc, cat, _, _, _, foy := newUC()
+		uc, cat, _, _, _, _, foy := newUC()
 		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
 		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
 		cat.On("List", ctx).Return([]entities.Category{
@@ -223,7 +259,7 @@ func TestCreate(t *testing.T) {
 
 	Convey("Rejects too-short names", t, func() {
 		ctx := context.Background()
-		uc, _, _, _, _, foy := newUC()
+		uc, _, _, _, _, _, foy := newUC()
 		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
 		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
 		_, err := uc.Create(ctx, CreateCategoryInput{ActorUserID: "uid-rdc", Name: "x"})
@@ -232,7 +268,7 @@ func TestCreate(t *testing.T) {
 
 	Convey("Rejects an intruder actor", t, func() {
 		ctx := context.Background()
-		uc, _, _, _, _, foy := newUC()
+		uc, _, _, _, _, _, foy := newUC()
 		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
 		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
 		_, err := uc.Create(ctx, CreateCategoryInput{ActorUserID: "intruder", Name: "Garage"})
@@ -245,7 +281,7 @@ func TestCreate(t *testing.T) {
 func TestUpdate(t *testing.T) {
 	Convey("Predefined: only default mode is mutable; name stays", t, func() {
 		ctx := context.Background()
-		uc, cat, _, _, _, foy := newUC()
+		uc, cat, _, _, _, _, foy := newUC()
 		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
 		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
 		cat.On("FindByID", ctx, "eau").Return(&entities.Category{
@@ -268,7 +304,7 @@ func TestUpdate(t *testing.T) {
 
 	Convey("Custom: name + default mode both mutable", t, func() {
 		ctx := context.Background()
-		uc, cat, _, _, _, foy := newUC()
+		uc, cat, _, _, _, _, foy := newUC()
 		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
 		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
 		cat.On("FindByID", ctx, "garage-id").Return(&entities.Category{
@@ -290,7 +326,7 @@ func TestUpdate(t *testing.T) {
 
 	Convey("Returns ErrNotFound for ghost id", t, func() {
 		ctx := context.Background()
-		uc, cat, _, _, _, foy := newUC()
+		uc, cat, _, _, _, _, foy := newUC()
 		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
 		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
 		cat.On("FindByID", ctx, "ghost").Return((*entities.Category)(nil), nil)
@@ -307,7 +343,7 @@ func TestUpdate(t *testing.T) {
 func TestDelete(t *testing.T) {
 	Convey("Rejects predefined categories unconditionally", t, func() {
 		ctx := context.Background()
-		uc, cat, _, _, _, foy := newUC()
+		uc, cat, _, _, _, _, foy := newUC()
 		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
 		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
 		cat.On("FindByID", ctx, "eau").Return(&entities.Category{
@@ -319,7 +355,7 @@ func TestDelete(t *testing.T) {
 
 	Convey("Rejects custom category that's referenced", t, func() {
 		ctx := context.Background()
-		uc, cat, exp, tpl, doc, foy := newUC()
+		uc, cat, exp, tpl, doc, con, foy := newUC()
 		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
 		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
 		cat.On("FindByID", ctx, "garage-id").Return(&entities.Category{
@@ -328,6 +364,7 @@ func TestDelete(t *testing.T) {
 		exp.On("CountByCategory", ctx, "garage-id").Return(3, nil)
 		tpl.On("CountByCategory", ctx, "garage-id").Return(0, nil)
 		doc.On("CountByCategory", ctx, "garage-id").Return(0, nil)
+		con.On("CountByCategory", ctx, "garage-id").Return(0, nil)
 
 		err := uc.Delete(ctx, "garage-id", "uid-rdc")
 		So(errors.Is(err, entities.ValidationError{}), ShouldBeTrue)
@@ -336,7 +373,7 @@ func TestDelete(t *testing.T) {
 
 	Convey("Deletes an unreferenced custom category", t, func() {
 		ctx := context.Background()
-		uc, cat, exp, tpl, doc, foy := newUC()
+		uc, cat, exp, tpl, doc, con, foy := newUC()
 		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
 		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
 		cat.On("FindByID", ctx, "garage-id").Return(&entities.Category{
@@ -345,6 +382,7 @@ func TestDelete(t *testing.T) {
 		exp.On("CountByCategory", ctx, "garage-id").Return(0, nil)
 		tpl.On("CountByCategory", ctx, "garage-id").Return(0, nil)
 		doc.On("CountByCategory", ctx, "garage-id").Return(0, nil)
+		con.On("CountByCategory", ctx, "garage-id").Return(0, nil)
 		cat.On("Delete", ctx, "garage-id").Return(nil)
 
 		err := uc.Delete(ctx, "garage-id", "uid-rdc")
@@ -353,7 +391,7 @@ func TestDelete(t *testing.T) {
 
 	Convey("Returns ErrNotFound for ghost id", t, func() {
 		ctx := context.Background()
-		uc, cat, _, _, _, foy := newUC()
+		uc, cat, _, _, _, _, foy := newUC()
 		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
 		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
 		cat.On("FindByID", ctx, "ghost").Return((*entities.Category)(nil), nil)

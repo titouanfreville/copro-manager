@@ -81,6 +81,11 @@ type Usecases interface {
 	// — used when amount_pending flips false on Update.
 	ResolvePendingCompletion(ctx context.Context, expenseID string) error
 
+	// ResolveContractExpiring clears every contract_expiring alert
+	// referencing the given contract_id (any end_date / recipient
+	// suffix). Called by the contracts-delete cascade.
+	ResolveContractExpiring(ctx context.Context, contractID string) error
+
 	// ResolveSeasonalAll clears every non-resolved balance_seasonal
 	// alert — used by settlements on every Create/Update/Delete that
 	// flips the live balance to zero. Idempotent.
@@ -92,6 +97,7 @@ type ScanSummary struct {
 	MissingReceiptFired      int `json:"missing_receipt_fired"`
 	SeasonalFired            int `json:"seasonal_fired"`
 	MonthlyMeterReadingFired int `json:"monthly_meter_reading_fired"`
+	ContractExpiringFired    int `json:"contract_expiring_fired"`
 }
 
 type usecases struct {
@@ -105,6 +111,7 @@ type usecases struct {
 	foyers      interfaces.FoyersStore
 	copros      interfaces.CoprosStore
 	meters      interfaces.MetersStore
+	contracts   interfaces.ContractsStore
 	now         func() time.Time
 	location    *time.Location
 }
@@ -123,6 +130,7 @@ func New(
 	foyers interfaces.FoyersStore,
 	copros interfaces.CoprosStore,
 	meters interfaces.MetersStore,
+	contracts interfaces.ContractsStore,
 ) Usecases {
 	loc, err := time.LoadLocation("Europe/Paris")
 	if err != nil {
@@ -139,6 +147,7 @@ func New(
 		foyers:      foyers,
 		copros:      copros,
 		meters:      meters,
+		contracts:   contracts,
 		now:         time.Now,
 		location:    loc,
 	}
@@ -377,6 +386,14 @@ func (uc *usecases) ResolveSeasonalAll(ctx context.Context) error {
 	return uc.ResolveByPrefix(ctx, string(entities.AlertKindBalanceSeasonal)+":")
 }
 
+// ResolveContractExpiring clears every contract_expiring alert tied
+// to the given contract — the prefix matches all (end_date, foyerID)
+// suffix variants. Called from the contracts-delete cascade so the
+// deep-link in the feed doesn't lead to a deleted contract.
+func (uc *usecases) ResolveContractExpiring(ctx context.Context, contractID string) error {
+	return uc.ResolveByPrefix(ctx, string(entities.AlertKindContractExpiring)+":"+contractID+":")
+}
+
 // ScanTimeBased runs the daily checks. Idempotent — every alert it
 // produces uses a stable dedupe key so re-running on the same day is a
 // no-op.
@@ -405,10 +422,20 @@ func (uc *usecases) ScanTimeBased(ctx context.Context) (*ScanSummary, error) {
 		return summary, err
 	}
 
+	// Contract expiring: fires once per contract when end_date is
+	// within ContractExpiringSoonDays (30) of today. Dedupe on
+	// (contract_id, end_date) — renewal resets the dedupe so the next
+	// expiry fires too.
+	if err := uc.scanContractExpiring(ctx, summary); err != nil {
+		log.Error("contract expiring scan failed", zap.Error(err))
+		return summary, err
+	}
+
 	log.Info("Success",
 		zap.Int("missing_receipt_fired", summary.MissingReceiptFired),
 		zap.Int("seasonal_fired", summary.SeasonalFired),
 		zap.Int("monthly_meter_reading_fired", summary.MonthlyMeterReadingFired),
+		zap.Int("contract_expiring_fired", summary.ContractExpiringFired),
 	)
 	return summary, nil
 }
@@ -612,6 +639,83 @@ func (uc *usecases) scanMonthlyMeterReading(ctx context.Context, summary *ScanSu
 		summary.MonthlyMeterReadingFired++
 	}
 	return nil
+}
+
+// scanContractExpiring fires once per active contract whose end_date
+// is within ContractExpiringSoonDays. Both foyers receive the alert
+// (the contract binds the building, not a household). Idempotent via
+// the (contract_id, end_date) dedupe key — renewing the contract
+// (writing a new end_date) yields a fresh dedupe so the next 30-day
+// window will fire. Cancelled / already-expired contracts are skipped.
+func (uc *usecases) scanContractExpiring(ctx context.Context, summary *ScanSummary) error {
+	if uc.contracts == nil {
+		return nil
+	}
+	now := uc.now().In(uc.location)
+	contracts, err := uc.contracts.List(ctx)
+	if err != nil {
+		return fmt.Errorf("list contracts: %w", err)
+	}
+	if len(contracts) == 0 {
+		return nil
+	}
+
+	rdc, err := uc.foyers.FindByFloor(ctx, entities.FoyerFloorRDC)
+	if err != nil {
+		return fmt.Errorf("find rdc: %w", err)
+	}
+	premier, err := uc.foyers.FindByFloor(ctx, entities.FoyerFloor1er)
+	if err != nil {
+		return fmt.Errorf("find 1er: %w", err)
+	}
+	if rdc == nil || premier == nil {
+		return fmt.Errorf("%w: both foyers must exist", domainerrors.ErrNotFound)
+	}
+
+	for _, c := range contracts {
+		if !c.IsExpiringSoon(now) {
+			continue
+		}
+		dedupe := entities.DedupeKeyContractExpiring(c.ID, c.EndDate)
+		days := entities.DaysUntil(now, c.EndDate)
+		body := contractExpiringBody(c.Name, c.EndDate, days)
+		for _, foyerID := range []string{rdc.ID, premier.ID} {
+			_, fireErr := uc.Fire(ctx, FireInput{
+				Kind:             entities.AlertKindContractExpiring,
+				RecipientFoyerID: foyerID,
+				DedupeKey:        dedupe + ":" + foyerID,
+				Title:            "Contrat à renouveler",
+				Body:             body,
+				DeepLink:         "/contracts?focus=" + c.ID,
+				Payload: map[string]any{
+					"contract_id":   c.ID,
+					"contract_name": c.Name,
+					"end_date":      c.EndDate.Format("2006-01-02"),
+					"society_name":  c.Society.Name,
+				},
+			})
+			if fireErr != nil {
+				return fmt.Errorf("fire contract_expiring: %w", fireErr)
+			}
+			summary.ContractExpiringFired++
+		}
+	}
+	return nil
+}
+
+// contractExpiringBody renders the alert body. Days is the date-only
+// delta from today to end_date; the message reads naturally for the
+// boundary cases (same-day, tomorrow) instead of "expire dans 0 jour(s)".
+func contractExpiringBody(name string, endDate time.Time, days int) string {
+	dateLabel := endDate.Format("02/01/2006")
+	switch {
+	case days <= 0:
+		return fmt.Sprintf("« %s » expire aujourd'hui (%s).", name, dateLabel)
+	case days == 1:
+		return fmt.Sprintf("« %s » expire demain (%s).", name, dateLabel)
+	default:
+		return fmt.Sprintf("« %s » expire dans %d jours (%s).", name, days, dateLabel)
+	}
 }
 
 func (uc *usecases) actorFoyer(ctx context.Context, actorUserID string) (*entities.Foyer, error) {

@@ -21,6 +21,7 @@ type uploadDocURLRequest struct {
 	OriginalFilename string `json:"original_filename"`
 	ContentType      string `json:"content_type"`
 	SizeBytes        int64  `json:"size_bytes"`
+	LinkedContractID string `json:"linked_contract_id,omitempty"`
 }
 
 type uploadDocURLResponse struct {
@@ -40,13 +41,15 @@ type recordDocRequest struct {
 	ContentType      string `json:"content_type"`
 	SizeBytes        int64  `json:"size_bytes"`
 	OriginalFilename string `json:"original_filename"`
+	LinkedContractID string `json:"linked_contract_id,omitempty"`
 }
 
 type updateDocRequest struct {
-	Title       string `json:"title"`
-	Description string `json:"description,omitempty"`
-	CategoryID  string `json:"category_id"`
-	Group       string `json:"group,omitempty"`
+	Title            string `json:"title"`
+	Description      string `json:"description,omitempty"`
+	CategoryID       string `json:"category_id"`
+	Group            string `json:"group,omitempty"`
+	LinkedContractID string `json:"linked_contract_id,omitempty"`
 }
 
 type docDownloadURLResponse struct {
@@ -87,6 +90,7 @@ func (e *Endpoints) RequestDocumentUploadURL(w http.ResponseWriter, r *http.Requ
 		OriginalFilename: req.OriginalFilename,
 		ContentType:      req.ContentType,
 		SizeBytes:        req.SizeBytes,
+		LinkedContractID: req.LinkedContractID,
 	})
 	if err != nil {
 		status, body := routeerrors.ManageErrors(err)
@@ -121,6 +125,7 @@ func (e *Endpoints) RecordDocument(w http.ResponseWriter, r *http.Request) {
 		ContentType:      req.ContentType,
 		SizeBytes:        req.SizeBytes,
 		OriginalFilename: req.OriginalFilename,
+		LinkedContractID: req.LinkedContractID,
 	})
 	if err != nil {
 		status, body := routeerrors.ManageErrors(err)
@@ -145,11 +150,12 @@ func (e *Endpoints) UpdateDocument(w http.ResponseWriter, r *http.Request) {
 	actorUID, _ := r.Context().Value(shared.UserID).(string)
 
 	d, err := e.usecases.Documents.Update(r.Context(), id, documents.UpdateDocumentInput{
-		ActorUserID: actorUID,
-		Title:       req.Title,
-		Description: req.Description,
-		CategoryID:  req.CategoryID,
-		Group:       req.Group,
+		ActorUserID:      actorUID,
+		Title:            req.Title,
+		Description:      req.Description,
+		CategoryID:       req.CategoryID,
+		Group:            req.Group,
+		LinkedContractID: req.LinkedContractID,
 	})
 	if err != nil {
 		status, body := routeerrors.ManageErrors(err)
