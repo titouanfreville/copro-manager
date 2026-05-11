@@ -53,6 +53,13 @@ type AuthProvisioner interface {
 	// PasswordResetLink mints a one-shot password-reset URL for the given
 	// email. The admin operator copies and sends it via any channel.
 	PasswordResetLink(ctx context.Context, email string) (string, error)
+
+	// SetPassword overwrites the Firebase Auth password for the user with
+	// the given email. Used by the admin escape hatch when the reset-link
+	// flow is too slow for the operator (e.g. they're on the phone with
+	// the new user). The caller is responsible for any length / strength
+	// gating before invoking.
+	SetPassword(ctx context.Context, email, password string) error
 }
 
 // UsersService is the slice of the users domain that other usecases (foyers)

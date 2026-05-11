@@ -54,6 +54,10 @@ func (m *mockAuth) PasswordResetLink(ctx context.Context, email string) (string,
 	return args.String(0), args.Error(1)
 }
 
+func (m *mockAuth) SetPassword(ctx context.Context, email, password string) error {
+	return m.Called(ctx, email, password).Error(0)
+}
+
 func TestGetOrCreateByEmail(t *testing.T) {
 	Convey("Given a Users usecase", t, func() {
 		ctx := context.Background()
@@ -132,6 +136,48 @@ func TestResetPassword(t *testing.T) {
 				So(link, ShouldEqual, "")
 				So(errors.Is(err, entities.ValidationError{}), ShouldBeTrue)
 				auth.AssertNotCalled(t, "PasswordResetLink", mock.Anything, mock.Anything)
+			})
+		})
+	})
+}
+
+func TestSetPassword(t *testing.T) {
+	Convey("Given a Users usecase setting a password", t, func() {
+		ctx := context.Background()
+		store := &mockUsersStore{}
+		auth := &mockAuth{}
+		uc := New(zap.NewNop(), store, auth)
+
+		Convey("When the user exists and the password is long enough", func() {
+			store.On("FindByID", ctx, "uid-1").Return(&entities.User{ID: "uid-1", Email: "a@x.fr"}, nil)
+			auth.On("SetPassword", ctx, "a@x.fr", "longenoughpwd").Return(nil)
+
+			err := uc.SetPassword(ctx, "uid-1", "longenoughpwd")
+
+			Convey("Then the auth provisioner is called", func() {
+				So(err, ShouldBeNil)
+				auth.AssertCalled(t, "SetPassword", ctx, "a@x.fr", "longenoughpwd")
+			})
+		})
+
+		Convey("When the password is too short", func() {
+			err := uc.SetPassword(ctx, "uid-1", "short")
+
+			Convey("Then ValidationError, no store/auth call", func() {
+				So(errors.Is(err, entities.ValidationError{}), ShouldBeTrue)
+				store.AssertNotCalled(t, "FindByID", mock.Anything, mock.Anything)
+				auth.AssertNotCalled(t, "SetPassword", mock.Anything, mock.Anything, mock.Anything)
+			})
+		})
+
+		Convey("When the user does not exist", func() {
+			store.On("FindByID", ctx, "ghost").Return((*entities.User)(nil), nil)
+
+			err := uc.SetPassword(ctx, "ghost", "longenoughpwd")
+
+			Convey("Then ValidationError, no auth call", func() {
+				So(errors.Is(err, entities.ValidationError{}), ShouldBeTrue)
+				auth.AssertNotCalled(t, "SetPassword", mock.Anything, mock.Anything, mock.Anything)
 			})
 		})
 	})

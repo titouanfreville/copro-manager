@@ -1,8 +1,11 @@
 import {
+  EmailAuthProvider,
   onAuthStateChanged,
+  reauthenticateWithCredential,
   sendPasswordResetEmail,
   signInWithEmailAndPassword,
   signOut,
+  updatePassword,
   type User,
 } from "firebase/auth";
 import { writable, type Readable } from "svelte/store";
@@ -65,8 +68,12 @@ function friendlyAuthError(err: unknown): Error {
       return new Error(
         "Connexion réseau impossible. Vérifiez votre accès internet.",
       );
+    case "auth/weak-password":
+      return new Error("Mot de passe trop faible.");
+    case "auth/requires-recent-login":
+      return new Error("Connexion expirée. Reconnecte-toi puis réessaye.");
     default:
-      return new Error("Connexion impossible. Réessayez.");
+      return new Error("Opération impossible. Réessayez.");
   }
 }
 
@@ -110,4 +117,30 @@ export async function idToken(): Promise<string | null> {
   const user = firebaseAuth().currentUser;
   if (!user) return null;
   return user.getIdToken();
+}
+
+/**
+ * Change the signed-in user's password. Firebase requires a recent
+ * sign-in for sensitive ops, so we reauthenticate first with the
+ * current password — if the token aged out the call would otherwise
+ * fail with `auth/requires-recent-login`.
+ */
+export async function changePassword(
+  currentPassword: string,
+  newPassword: string,
+): Promise<void> {
+  const user = firebaseAuth().currentUser;
+  if (!user || !user.email) {
+    throw new Error("Tu dois être connecté pour changer ton mot de passe.");
+  }
+  if (newPassword.length < 8) {
+    throw new Error("Nouveau mot de passe trop court (8 caractères minimum).");
+  }
+  try {
+    const cred = EmailAuthProvider.credential(user.email, currentPassword);
+    await reauthenticateWithCredential(user, cred);
+    await updatePassword(user, newPassword);
+  } catch (err) {
+    throw friendlyAuthError(err);
+  }
 }

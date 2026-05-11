@@ -251,3 +251,32 @@ func (e *Endpoints) AdminResetUserPassword(w http.ResponseWriter, r *http.Reques
 
 	rest.Render().JSON(http.StatusOK, w, r, resetPasswordResponse{ResetLink: link})
 }
+
+type setPasswordRequest struct {
+	Password string `json:"password"`
+}
+
+// AdminSetUserPassword handles POST /admin/users/{id}/password — admin
+// escape hatch when the reset-link flow is too slow (operator is on the
+// phone walking a new user through onboarding).
+func (e *Endpoints) AdminSetUserPassword(w http.ResponseWriter, r *http.Request) {
+	userID := chi.URLParam(r, "id")
+	if userID == "" {
+		rest.Render().JSON(http.StatusBadRequest, w, r, routeerrors.NewServErrors("INVALID_ID", "missing user id"))
+		return
+	}
+
+	var req setPasswordRequest
+	if err := rest.Bind().JSONData(r, &req); err != nil {
+		rest.Render().JSON(http.StatusBadRequest, w, r, routeerrors.NewServErrors("INVALID_BODY", "invalid JSON body"))
+		return
+	}
+
+	if err := e.usecases.Users.SetPassword(r.Context(), userID, req.Password); err != nil {
+		status, body := routeerrors.ManageErrors(err)
+		rest.Render().JSON(status, w, r, body)
+		return
+	}
+
+	rest.Render().NoContent(http.StatusNoContent, w)
+}

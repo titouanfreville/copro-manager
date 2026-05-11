@@ -15,6 +15,11 @@ import (
 	"github.com/titouanfreville/copro-manager/api/src/domain/interfaces"
 )
 
+// minPasswordLen is the minimum password length we accept on the admin
+// set-password path. Firebase's own default is 6; we bump to 8 so admin
+// shortcuts don't slip below something the user could plausibly guess.
+const minPasswordLen = 8
+
 // Usecases is the users domain contract.
 type Usecases interface {
 	// GetOrCreateByEmail returns the User for a given email — creating both
@@ -29,6 +34,11 @@ type Usecases interface {
 	// ResetPassword mints a Firebase one-shot reset link for the given user's
 	// email. The admin operator forwards it via any channel.
 	ResetPassword(ctx context.Context, userID string) (string, error)
+	// SetPassword writes a chosen password to the user's Firebase Auth
+	// account. Admin escape hatch for the "user is on the phone, no time
+	// to wait for the reset email" case. Returns ValidationError when the
+	// password is too short.
+	SetPassword(ctx context.Context, userID, password string) error
 }
 
 type usecases struct {
@@ -105,6 +115,33 @@ func (uc *usecases) List(ctx context.Context) ([]entities.User, error) {
 
 func (uc *usecases) ListByIDs(ctx context.Context, ids []string) ([]entities.User, error) {
 	return uc.users.ListByIDs(ctx, ids)
+}
+
+func (uc *usecases) SetPassword(ctx context.Context, userID, password string) error {
+	log := uc.logger.With(zap.String("method", "SetPassword"), zap.String("user_id", userID))
+
+	if len(password) < minPasswordLen {
+		log.Warn("validation failed: password too short")
+		return entities.ValidationError{Key: "password", Message: fmt.Sprintf("min %d caractères", minPasswordLen)}
+	}
+
+	user, err := uc.users.FindByID(ctx, userID)
+	if err != nil {
+		log.Error("user lookup failed", zap.Error(err))
+		return fmt.Errorf("lookup user: %w", err)
+	}
+	if user == nil {
+		log.Warn("user not found")
+		return entities.ValidationError{Key: "user_id", Message: "not found"}
+	}
+
+	if err := uc.auth.SetPassword(ctx, user.Email, password); err != nil {
+		log.Error("set password failed", zap.Error(err))
+		return fmt.Errorf("set password: %w", err)
+	}
+
+	log.Info("Success")
+	return nil
 }
 
 func (uc *usecases) ResetPassword(ctx context.Context, userID string) (string, error) {

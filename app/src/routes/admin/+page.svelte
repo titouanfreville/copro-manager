@@ -8,6 +8,7 @@
 		listFoyers,
 		resetPassword,
 		setAdminKey,
+		setUserPassword,
 		updateFoyerParts,
 		type AddMemberResponse,
 		type CreateFoyerResponse,
@@ -44,6 +45,12 @@
 	let resetTarget = $state<string>('');
 	let resetError = $state<string>('');
 	let resetSubmitting = $state<boolean>(false);
+
+	// Per-member state for the direct set-password escape hatch.
+	let setPwdDraft = $state<Record<string, string>>({});
+	let setPwdSubmitting = $state<Record<string, boolean>>({});
+	let setPwdError = $state<Record<string, string>>({});
+	let setPwdSuccess = $state<Record<string, string>>({});
 
 	// CSV import
 	let importPayerFoyerId = $state<string>('');
@@ -195,6 +202,26 @@
 		}
 	}
 
+	async function onSetPassword(userId: string, label: string) {
+		const pwd = (setPwdDraft[userId] ?? '').trim();
+		setPwdError[userId] = '';
+		setPwdSuccess[userId] = '';
+		if (pwd.length < 8) {
+			setPwdError[userId] = 'Mot de passe trop court (8 caractères minimum).';
+			return;
+		}
+		setPwdSubmitting[userId] = true;
+		try {
+			await setUserPassword(userId, pwd);
+			setPwdSuccess[userId] = `Mot de passe défini pour ${label}.`;
+			setPwdDraft[userId] = '';
+		} catch (err) {
+			setPwdError[userId] = err instanceof ApiError ? `${err.code}: ${err.message}` : String(err);
+		} finally {
+			setPwdSubmitting[userId] = false;
+		}
+	}
+
 	function onImportFileChange(e: Event) {
 		const input = e.currentTarget as HTMLInputElement;
 		importFile = input.files?.[0] ?? null;
@@ -337,20 +364,59 @@
 
 						<!-- Members -->
 						{#if f.members?.length}
-							<ul class="mb-3 space-y-1">
+							<ul class="mb-3 space-y-2">
 								{#each f.members as m (m.id)}
-									<li class="flex items-center justify-between rounded bg-slate-50 px-2 py-1 text-sm">
-										<span>
-											<span class="font-medium">{m.display_name || '—'}</span>
-											<span class="ml-2 text-slate-500">{m.email}</span>
-										</span>
-										<button
-											class="rounded border border-slate-300 px-2 py-0.5 text-xs hover:bg-white disabled:opacity-50"
-											disabled={resetSubmitting}
-											onclick={() => onResetPassword(m.id, m.email)}
-										>
-											Réinitialiser MDP
-										</button>
+									<li class="rounded bg-slate-50 px-2 py-1 text-sm">
+										<div class="flex items-center justify-between">
+											<span>
+												<span class="font-medium">{m.display_name || '—'}</span>
+												<span class="ml-2 text-slate-500">{m.email}</span>
+											</span>
+											<button
+												class="rounded border border-slate-300 px-2 py-0.5 text-xs hover:bg-white disabled:opacity-50"
+												disabled={resetSubmitting}
+												onclick={() => onResetPassword(m.id, m.email)}
+											>
+												Réinitialiser MDP
+											</button>
+										</div>
+										<details class="mt-1">
+											<summary class="cursor-pointer text-xs text-slate-500">
+												Définir un mot de passe directement
+											</summary>
+											<form
+												class="mt-2 flex flex-wrap items-center gap-2"
+												onsubmit={(e) => {
+													e.preventDefault();
+													onSetPassword(m.id, m.email);
+												}}
+											>
+												<input
+													type="text"
+													autocomplete="off"
+													placeholder="Mot de passe (8 car. min.)"
+													bind:value={setPwdDraft[m.id]}
+													class="flex-1 min-w-0 rounded border border-slate-300 px-2 py-1 text-xs"
+												/>
+												<button
+													type="submit"
+													class="rounded bg-slate-900 px-2 py-1 text-xs font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+													disabled={setPwdSubmitting[m.id]}
+												>
+													{setPwdSubmitting[m.id] ? '…' : 'Définir'}
+												</button>
+												{#if setPwdError[m.id]}
+													<p class="basis-full text-xs text-red-600">{setPwdError[m.id]}</p>
+												{/if}
+												{#if setPwdSuccess[m.id]}
+													<p class="basis-full text-xs text-emerald-700">{setPwdSuccess[m.id]}</p>
+												{/if}
+												<p class="basis-full text-[11px] text-slate-500">
+													Le mot de passe est appliqué immédiatement et n'est pas conservé.
+													Communique-le au membre via un canal sûr.
+												</p>
+											</form>
+										</details>
 									</li>
 								{/each}
 							</ul>

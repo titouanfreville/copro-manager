@@ -94,9 +94,9 @@
 		{/if}
 		<div class="user-desktop">
 			{#if $authState.status === 'signed-in'}
-				<span class="user-email" title={$authState.user.email}>
+				<a class="user-email" href="/profile" title={$authState.user.email}>
 					{$authState.user.email}
-				</span>
+				</a>
 				<button class="logout" type="button" onclick={() => logout()}>Déconnexion</button>
 			{/if}
 		</div>
@@ -155,9 +155,9 @@
 
 		{#if $authState.status === 'signed-in'}
 			<div class="sheet-foot">
-				<span class="sheet-email" title={$authState.user.email}>
+				<a class="sheet-email" href="/profile" title={$authState.user.email} onclick={closeMenu}>
 					{$authState.user.email}
-				</span>
+				</a>
 				<button class="sheet-logout" type="button" onclick={onLogout}>Déconnexion</button>
 			</div>
 		{/if}
@@ -271,6 +271,11 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+		text-decoration: none;
+		transition: color var(--dur-fast) var(--ease-out);
+	}
+	.user-email:hover {
+		color: var(--ink);
 	}
 	.logout {
 		background: transparent;
@@ -418,6 +423,10 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+		text-decoration: none;
+	}
+	.sheet-email:hover {
+		color: var(--ink);
 	}
 	.sheet-logout {
 		align-self: flex-start;

@@ -18,6 +18,7 @@ func (transport *API) initRoutes(r chi.Router) {
 		adminRouter.Post("/foyers/{id}/members", transport.endpoints.AdminAddFoyerMember)
 		adminRouter.Post("/expenses/import", transport.endpoints.AdminImportExpenses)
 		adminRouter.Post("/users/{id}/reset-password", transport.endpoints.AdminResetUserPassword)
+		adminRouter.Post("/users/{id}/password", transport.endpoints.AdminSetUserPassword)
 		// One-shot data fix: rewrites copro_id everywhere to the canonical
 		// Copro and deletes orphan Copro docs created by older versions of
 		// GetOrCreateSingleton.

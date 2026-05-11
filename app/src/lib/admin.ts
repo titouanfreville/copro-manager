@@ -162,6 +162,16 @@ export function resetPassword(userId: string): Promise<ResetPasswordResponse> {
   );
 }
 
+export function setUserPassword(
+  userId: string,
+  password: string,
+): Promise<void> {
+  return adminApi<void>(`/admin/users/${encodeURIComponent(userId)}/password`, {
+    method: "POST",
+    body: { password },
+  });
+}
+
 export interface ImportSummary {
   processed: number;
   created: number;

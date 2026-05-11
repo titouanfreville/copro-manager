@@ -79,6 +79,18 @@ func (p *FirebaseProvisioner) PasswordResetLink(ctx context.Context, email strin
 	return link, nil
 }
 
+// SetPassword overwrites the Firebase Auth password for the given email.
+func (p *FirebaseProvisioner) SetPassword(ctx context.Context, email, password string) error {
+	user, err := p.client.GetUserByEmail(ctx, email)
+	if err != nil {
+		return fmt.Errorf("get user by email: %w", err)
+	}
+	if _, err := p.client.UpdateUser(ctx, user.UID, (&fbauth.UserToUpdate{}).Password(password)); err != nil {
+		return fmt.Errorf("update password: %w", err)
+	}
+	return nil
+}
+
 func generatePassword() (string, error) {
 	classes := []string{pwdLowers, pwdUppers, pwdDigits, pwdSpecials}
 	pwd := make([]byte, 0, pwdLength)
