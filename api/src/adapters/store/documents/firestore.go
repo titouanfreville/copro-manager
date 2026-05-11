@@ -14,26 +14,59 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/titouanfreville/copro-manager/api/src/domain/entities"
+	domainerrorsPkg "github.com/titouanfreville/copro-manager/api/src/domain/errors"
 	"github.com/titouanfreville/copro-manager/api/src/domain/interfaces"
 )
 
 const collection = "documents"
 
 type documentDoc struct {
-	ID               string    `firestore:"id"`
-	CoproID          string    `firestore:"copro_id"`
-	CategoryID       string    `firestore:"category_id"`
-	Group            string    `firestore:"group,omitempty"`
-	Title            string    `firestore:"title"`
-	Description      string    `firestore:"description,omitempty"`
-	ObjectName       string    `firestore:"object_name"`
-	ContentType      string    `firestore:"content_type"`
-	SizeBytes        int64     `firestore:"size_bytes"`
-	OriginalFilename string    `firestore:"original_filename"`
-	UploadedAt       time.Time `firestore:"uploaded_at"`
-	UploadedBy       string    `firestore:"uploaded_by"`
-	LinkedExpenseID  string    `firestore:"linked_expense_id,omitempty"`
-	LinkedContractID string    `firestore:"linked_contract_id,omitempty"`
+	ID               string            `firestore:"id"`
+	CoproID          string            `firestore:"copro_id"`
+	CategoryID       string            `firestore:"category_id"`
+	Group            string            `firestore:"group,omitempty"`
+	Title            string            `firestore:"title"`
+	Description      string            `firestore:"description,omitempty"`
+	ObjectName       string            `firestore:"object_name"`
+	ContentType      string            `firestore:"content_type"`
+	SizeBytes        int64             `firestore:"size_bytes"`
+	OriginalFilename string            `firestore:"original_filename"`
+	UploadedAt       time.Time         `firestore:"uploaded_at"`
+	UploadedBy       string            `firestore:"uploaded_by"`
+	LinkedExpenseID  string            `firestore:"linked_expense_id,omitempty"`
+	LinkedContractID string            `firestore:"linked_contract_id,omitempty"`
+	Analysis         *documentAnalysis `firestore:"analysis,omitempty"`
+}
+
+// documentAnalysis is the firestore-side mirror of entities.DocumentAnalysis
+// (kept here per the layering rule: firestore tags never leak into the
+// domain entity). Nested map shape — both extraction sub-objects are
+// pointer-typed so absent ones round-trip as nil rather than empty.
+type documentAnalysis struct {
+	Kind       string              `firestore:"kind"`
+	Confidence float64             `firestore:"confidence"`
+	AnalyzedAt time.Time           `firestore:"analyzed_at"`
+	Model      string              `firestore:"model,omitempty"`
+	Reason     string              `firestore:"reason,omitempty"`
+	Expense    *expenseExtraction  `firestore:"expense,omitempty"`
+	Contract   *contractExtraction `firestore:"contract,omitempty"`
+}
+
+type expenseExtraction struct {
+	AmountEUR    float64 `firestore:"amount_eur,omitempty"`
+	Date         string  `firestore:"date,omitempty"`
+	Vendor       string  `firestore:"vendor,omitempty"`
+	CategoryHint string  `firestore:"category_hint,omitempty"`
+	Description  string  `firestore:"description,omitempty"`
+}
+
+type contractExtraction struct {
+	Provider         string  `firestore:"provider,omitempty"`
+	ContractType     string  `firestore:"contract_type,omitempty"`
+	StartDate        string  `firestore:"start_date,omitempty"`
+	EndDate          string  `firestore:"end_date,omitempty"`
+	MonthlyAmountEUR float64 `firestore:"monthly_amount_eur,omitempty"`
+	ContractNumber   string  `firestore:"contract_number,omitempty"`
 }
 
 type Store struct {
@@ -100,6 +133,28 @@ func (s *Store) Update(ctx context.Context, d entities.Document) error {
 func (s *Store) Delete(ctx context.Context, id string) error {
 	if _, err := s.client.Collection(collection).Doc(id).Delete(ctx); err != nil {
 		return fmt.Errorf("documents: delete: %w", err)
+	}
+	return nil
+}
+
+// SetAnalysis patches only the `analysis` field via Firestore's
+// path-targeted Update — keeps a concurrent metadata edit safe from
+// the full-doc rewrite that the multi-second Gemini call would
+// otherwise produce. Passing nil writes a Firestore null, which the
+// decoder turns back into a nil pointer on read.
+//
+// Returns a wrapped `domainerrors.ErrNotFound` when the document was
+// deleted between the upstream FindByID and this Update — Firestore's
+// path-targeted Update fails with codes.NotFound rather than creating
+// the doc, so the caller's "concurrent delete during analyze" race
+// surfaces as a clean 404 instead of a generic 500.
+func (s *Store) SetAnalysis(ctx context.Context, id string, analysis *entities.DocumentAnalysis) error {
+	updates := []fs.Update{{Path: "analysis", Value: analysisFromEntity(analysis)}}
+	if _, err := s.client.Collection(collection).Doc(id).Update(ctx, updates); err != nil {
+		if status.Code(err) == codes.NotFound {
+			return fmt.Errorf("%w: document %q", domainerrorsPkg.ErrNotFound, id)
+		}
+		return fmt.Errorf("documents: set analysis: %w", err)
 	}
 	return nil
 }
@@ -216,6 +271,7 @@ func docToEntity(d documentDoc) entities.Document {
 		UploadedBy:       d.UploadedBy,
 		LinkedExpenseID:  d.LinkedExpenseID,
 		LinkedContractID: d.LinkedContractID,
+		Analysis:         analysisToEntity(d.Analysis),
 	}
 }
 
@@ -235,5 +291,72 @@ func entityToDoc(d entities.Document) documentDoc {
 		UploadedBy:       d.UploadedBy,
 		LinkedExpenseID:  d.LinkedExpenseID,
 		LinkedContractID: d.LinkedContractID,
+		Analysis:         analysisFromEntity(d.Analysis),
 	}
+}
+
+func analysisToEntity(a *documentAnalysis) *entities.DocumentAnalysis {
+	if a == nil {
+		return nil
+	}
+	out := &entities.DocumentAnalysis{
+		Kind:       entities.DocumentAnalysisKind(a.Kind),
+		Confidence: a.Confidence,
+		AnalyzedAt: a.AnalyzedAt,
+		Model:      a.Model,
+		Reason:     a.Reason,
+	}
+	if a.Expense != nil {
+		out.Expense = &entities.ExpenseExtraction{
+			AmountEUR:    a.Expense.AmountEUR,
+			Date:         a.Expense.Date,
+			Vendor:       a.Expense.Vendor,
+			CategoryHint: a.Expense.CategoryHint,
+			Description:  a.Expense.Description,
+		}
+	}
+	if a.Contract != nil {
+		out.Contract = &entities.ContractExtraction{
+			Provider:         a.Contract.Provider,
+			ContractType:     a.Contract.ContractType,
+			StartDate:        a.Contract.StartDate,
+			EndDate:          a.Contract.EndDate,
+			MonthlyAmountEUR: a.Contract.MonthlyAmountEUR,
+			ContractNumber:   a.Contract.ContractNumber,
+		}
+	}
+	return out
+}
+
+func analysisFromEntity(a *entities.DocumentAnalysis) *documentAnalysis {
+	if a == nil {
+		return nil
+	}
+	out := &documentAnalysis{
+		Kind:       string(a.Kind),
+		Confidence: a.Confidence,
+		AnalyzedAt: a.AnalyzedAt,
+		Model:      a.Model,
+		Reason:     a.Reason,
+	}
+	if a.Expense != nil {
+		out.Expense = &expenseExtraction{
+			AmountEUR:    a.Expense.AmountEUR,
+			Date:         a.Expense.Date,
+			Vendor:       a.Expense.Vendor,
+			CategoryHint: a.Expense.CategoryHint,
+			Description:  a.Expense.Description,
+		}
+	}
+	if a.Contract != nil {
+		out.Contract = &contractExtraction{
+			Provider:         a.Contract.Provider,
+			ContractType:     a.Contract.ContractType,
+			StartDate:        a.Contract.StartDate,
+			EndDate:          a.Contract.EndDate,
+			MonthlyAmountEUR: a.Contract.MonthlyAmountEUR,
+			ContractNumber:   a.Contract.ContractNumber,
+		}
+	}
+	return out
 }

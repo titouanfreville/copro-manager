@@ -3,8 +3,8 @@
 // attestations (LinkedContractID set). The signed-URL upload dance
 // has two legs:
 //
-//   1. RequestUploadURL — validate, mint a short-lived PUT URL.
-//   2. Record           — verify the GCS object matches, persist metadata.
+//  1. RequestUploadURL — validate, mint a short-lived PUT URL.
+//  2. Record           — verify the GCS object matches, persist metadata.
 //
 // Validation lives in adapters/validators/documents.go; entity
 // construction lives in build.go. This file is pure orchestration so
@@ -76,6 +76,11 @@ type Usecases interface {
 	// expense — used by the expense-delete cascade. Best-effort: a
 	// per-doc failure is logged and the loop continues.
 	DeleteByLinkedExpense(ctx context.Context, expenseID string) error
+	// Analyze runs (or re-runs) Gemini classification + extraction on
+	// a previously-uploaded document. Cached on the document itself —
+	// `force=true` bypasses the cache for a re-run after a prompt or
+	// model upgrade. Returns the updated document with Analysis set.
+	Analyze(ctx context.Context, id, actorUserID string, force bool) (*entities.Document, error)
 }
 
 type usecases struct {
@@ -84,11 +89,14 @@ type usecases struct {
 	foyers    interfaces.FoyersStore
 	storage   interfaces.StorageService
 	validator interfaces.DocumentValidator
+	analyzer  interfaces.DocumentAnalyzer
 	builder   *builder
 	now       func() time.Time
 }
 
-// New builds a documents usecase.
+// New builds a documents usecase. `analyzer` may be nil — Analyze
+// then degrades gracefully (returns ErrFeatureDisabled) without
+// pulling the GCS bytes.
 func New(
 	logger *zap.Logger,
 	documents interfaces.DocumentsStore,
@@ -97,6 +105,7 @@ func New(
 	expenses interfaces.ExpensesStore,
 	storage interfaces.StorageService,
 	validator interfaces.DocumentValidator,
+	analyzer interfaces.DocumentAnalyzer,
 ) Usecases {
 	now := time.Now
 	return &usecases{
@@ -105,6 +114,7 @@ func New(
 		foyers:    foyers,
 		storage:   storage,
 		validator: validator,
+		analyzer:  analyzer,
 		builder:   newBuilder(copros, expenses, now),
 		now:       now,
 	}
@@ -304,6 +314,94 @@ func (uc *usecases) GetDownloadURL(ctx context.Context, id, actorUserID string) 
 		return "", time.Time{}, fmt.Errorf("signed get url: %w", err)
 	}
 	return url, uc.now().Add(documentURLTTL), nil
+}
+
+// Analyze classifies + extracts structured fields from a previously
+// uploaded document via Gemini. Cached on the doc by default — pass
+// force=true to re-analyze (after a prompt iteration, or when the
+// extraction looked wrong). The analyzer is pluggable through
+// interfaces.DocumentAnalyzer so tests mock it directly.
+//
+// Cache lifetime: the verdict persists on the Document indefinitely
+// (no TTL) since the underlying file bytes are immutable post-upload
+// by design. Re-runs only happen on explicit force=true or after the
+// document is deleted + re-uploaded.
+//
+// Concurrency: the verdict is written via SetAnalysis (field-targeted
+// Firestore Update), so a parallel metadata edit (title, linked_…)
+// running while the multi-second Vertex call is in flight won't be
+// clobbered by a full-doc rewrite.
+func (uc *usecases) Analyze(ctx context.Context, id, actorUserID string, force bool) (*entities.Document, error) {
+	log := uc.logger.With(zap.String("method", "Analyze"), zap.String("document_id", id), zap.Bool("force", force))
+
+	// Authorize first — don't leak feature-config posture to
+	// unauthenticated callers via the ErrFeatureDisabled / storage
+	// short-circuit paths below.
+	if err := uc.authorize(ctx, actorUserID); err != nil {
+		return nil, err
+	}
+	if uc.analyzer == nil {
+		return nil, domainerrors.ErrFeatureDisabled
+	}
+	if uc.storage == nil {
+		return nil, fmt.Errorf("documents: storage not configured")
+	}
+	if !isSafeID(id) {
+		return nil, entities.ValidationError{Key: "document_id", Message: "invalid id"}
+	}
+
+	existing, err := uc.documents.FindByID(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("find document: %w", err)
+	}
+	if existing == nil {
+		return nil, fmt.Errorf("%w: document %q", domainerrors.ErrNotFound, id)
+	}
+	if existing.Analysis != nil && !force {
+		log.Info("Success", zap.String("cache", "hit"))
+		return existing, nil
+	}
+
+	// Allow-list MIME check before the (paid) Vertex call. The upload
+	// pipeline already enforces this on the way in, but Firestore-
+	// stored ContentType can drift over a long-lived doc — and an
+	// unsupported MIME burns cap budget for a low-quality verdict.
+	// Legacy docs with an empty ContentType (pre-allow-list era) are
+	// passed through; the analyzer's own empty-mime → image/jpeg
+	// default takes care of them.
+	if existing.ContentType != "" && !rest.IsAllowedUploadMime(existing.ContentType) {
+		return nil, entities.ValidationError{
+			Key:     "content_type",
+			Message: fmt.Sprintf("type %q non supporté pour l'analyse", existing.ContentType),
+		}
+	}
+
+	imageBytes, err := uc.storage.Read(ctx, existing.ObjectName)
+	if err != nil {
+		log.Warn("read failed", zap.Error(err))
+		return nil, fmt.Errorf("read object: %w", err)
+	}
+	analysis, err := uc.analyzer.AnalyzeDocument(ctx, imageBytes, existing.ContentType)
+	if err != nil {
+		log.Warn("analyzer failed", zap.Error(err))
+		return nil, err
+	}
+	// Defensive: the analyzer contract says "Kind always set" on
+	// success, but a misbehaving / future implementation returning
+	// (nil, nil) must not nil-deref us in the logger or SetAnalysis
+	// chain. Treat as a soft failure the UI can retry.
+	if analysis == nil {
+		return nil, fmt.Errorf("%w: analyzer returned nil verdict", domainerrors.ErrAnalysisFailed)
+	}
+	if err := uc.documents.SetAnalysis(ctx, id, analysis); err != nil {
+		return nil, fmt.Errorf("set analysis: %w", err)
+	}
+	existing.Analysis = analysis
+	log.Info("Success",
+		zap.String("kind", string(analysis.Kind)),
+		zap.Float64("confidence", analysis.Confidence),
+	)
+	return existing, nil
 }
 
 func (uc *usecases) authorize(ctx context.Context, actorUserID string) error {

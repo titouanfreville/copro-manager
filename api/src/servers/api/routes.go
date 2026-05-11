@@ -61,6 +61,7 @@ func (transport *API) initRoutes(r chi.Router) {
 		authed.Patch("/documents/{id}", transport.endpoints.UpdateDocument)
 		authed.Delete("/documents/{id}", transport.endpoints.DeleteDocument)
 		authed.Get("/documents/{id}/download-url", transport.endpoints.GetDocumentDownloadURL)
+		authed.Post("/documents/{id}/analyze", transport.endpoints.AnalyzeDocument)
 
 		authed.Get("/contracts", transport.endpoints.ListContracts)
 		authed.Post("/contracts", transport.endpoints.CreateContract)

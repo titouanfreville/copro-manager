@@ -40,6 +40,11 @@ type Document struct {
 	// a single doc can be linked to both an expense (e.g. a renewal
 	// invoice) and the contract that produced it.
 	LinkedContractID string `json:"linked_contract_id,omitempty"`
+	// Analysis is the cached Gemini verdict (kind + structured extraction)
+	// produced lazily by the /documents/{id}/analyze endpoint. Nil until
+	// the first analysis runs; persisted on the document itself so a
+	// re-read returns the cached result without a second Vertex AI call.
+	Analysis *DocumentAnalysis `json:"analysis,omitempty"`
 }
 
 // DocumentDraft is the user-editable subset for the upload flow

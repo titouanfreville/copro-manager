@@ -38,4 +38,12 @@ type DocumentsStore interface {
 	// remove the linked docs, just the back-reference goes stale until
 	// the user re-links them).
 	CountByLinkedContract(ctx context.Context, contractID string) (int, error)
+
+	// SetAnalysis patches only the `analysis` subdocument on the
+	// document, leaving every other field intact. Used by the lazy
+	// Gemini analyze path so a concurrent metadata edit (title,
+	// linked_expense_id, …) running while the multi-second Vertex
+	// call is in flight isn't clobbered by a full-doc rewrite.
+	// `analysis` may be nil to clear the cached verdict.
+	SetAnalysis(ctx context.Context, id string, analysis *entities.DocumentAnalysis) error
 }

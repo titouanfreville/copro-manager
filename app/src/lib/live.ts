@@ -18,7 +18,11 @@ import type {
   Category,
   Contract,
   ContractStatus,
+  ContractExtraction,
   Document,
+  DocumentAnalysis,
+  DocumentAnalysisKind,
+  ExpenseExtraction,
   ExpenseTemplate,
   Expense,
   Foyer,
@@ -51,6 +55,81 @@ function isoOf(v: unknown): string {
 function isoOrUndef(v: unknown): string | undefined {
   const out = isoOf(v);
   return out || undefined;
+}
+
+const KNOWN_DOC_ANALYSIS_KINDS: ReadonlyArray<DocumentAnalysisKind> = [
+  "expense",
+  "contract",
+  "other",
+];
+
+function asAnalysisKind(v: unknown): DocumentAnalysisKind | undefined {
+  return typeof v === "string" &&
+    (KNOWN_DOC_ANALYSIS_KINDS as ReadonlyArray<string>).includes(v)
+    ? (v as DocumentAnalysisKind)
+    : undefined;
+}
+
+function asNonBlankStr(v: unknown): string | undefined {
+  return typeof v === "string" && v.length > 0 ? v : undefined;
+}
+
+function asFiniteNumber(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
+
+function mapExpenseExtraction(raw: unknown): ExpenseExtraction | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const d = raw as SnapData;
+  const out: ExpenseExtraction = {};
+  const amt = asFiniteNumber(d.amount_eur);
+  if (amt !== undefined) out.amount_eur = amt;
+  const date = asNonBlankStr(d.date);
+  if (date) out.date = date;
+  const vendor = asNonBlankStr(d.vendor);
+  if (vendor) out.vendor = vendor;
+  const hint = asNonBlankStr(d.category_hint);
+  if (hint) out.category_hint = hint;
+  const desc = asNonBlankStr(d.description);
+  if (desc) out.description = desc;
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function mapContractExtraction(raw: unknown): ContractExtraction | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const d = raw as SnapData;
+  const out: ContractExtraction = {};
+  const provider = asNonBlankStr(d.provider);
+  if (provider) out.provider = provider;
+  const ctype = asNonBlankStr(d.contract_type);
+  if (ctype) out.contract_type = ctype;
+  const start = asNonBlankStr(d.start_date);
+  if (start) out.start_date = start;
+  const end = asNonBlankStr(d.end_date);
+  if (end) out.end_date = end;
+  const monthly = asFiniteNumber(d.monthly_amount_eur);
+  if (monthly !== undefined) out.monthly_amount_eur = monthly;
+  const num = asNonBlankStr(d.contract_number);
+  if (num) out.contract_number = num;
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function mapAnalysis(raw: unknown): DocumentAnalysis | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const d = raw as SnapData;
+  const kind = asAnalysisKind(d.kind);
+  if (!kind) return undefined;
+  return {
+    kind,
+    confidence:
+      asFiniteNumber(d.confidence) ?? 0,
+    analyzed_at: isoOf(d.analyzed_at),
+    model: typeof d.model === "string" ? d.model : "",
+    reason: asNonBlankStr(d.reason),
+    expense: kind === "expense" ? mapExpenseExtraction(d.expense) : undefined,
+    contract:
+      kind === "contract" ? mapContractExtraction(d.contract) : undefined,
+  };
 }
 
 function subscribe<T>(
@@ -310,6 +389,7 @@ export function subscribeDocuments(
           typeof d.linked_contract_id === "string" && d.linked_contract_id
             ? d.linked_contract_id
             : undefined,
+        analysis: mapAnalysis(d.analysis),
       }) satisfies Document,
     (rows) => rows.sort((a, b) => b.uploaded_at.localeCompare(a.uploaded_at)),
     onData,

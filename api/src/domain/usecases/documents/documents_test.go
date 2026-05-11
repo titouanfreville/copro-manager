@@ -61,6 +61,9 @@ func (m *mockDocumentsStore) CountByLinkedContract(ctx context.Context, contract
 	args := m.Called(ctx, contractID)
 	return args.Int(0), args.Error(1)
 }
+func (m *mockDocumentsStore) SetAnalysis(ctx context.Context, id string, analysis *entities.DocumentAnalysis) error {
+	return m.Called(ctx, id, analysis).Error(0)
+}
 
 type mockFoyersStore struct{ mock.Mock }
 
@@ -165,6 +168,16 @@ func (m *mockValidator) ValidateUpdate(ctx context.Context, d entities.DocumentM
 	return m.Called(ctx, d).Error(0)
 }
 
+type mockAnalyzer struct{ mock.Mock }
+
+func (m *mockAnalyzer) AnalyzeDocument(ctx context.Context, image []byte, mimeType string) (*entities.DocumentAnalysis, error) {
+	args := m.Called(ctx, image, mimeType)
+	if v := args.Get(0); v != nil {
+		return v.(*entities.DocumentAnalysis), args.Error(1)
+	}
+	return nil, args.Error(1)
+}
+
 // ─── Helpers ────────────────────────────────────────────────────────
 
 var (
@@ -192,6 +205,17 @@ func newUC() (*usecases, *mockDocumentsStore, *mockFoyersStore, *mockCoprosStore
 		now:       clock,
 	}
 	return uc, docs, foy, cps, exp, stor, val
+}
+
+// newUCWithAnalyzer is a variant of newUC that wires a mock analyzer
+// into the usecase so the Analyze() path can be exercised. The other
+// dependencies are returned for the rare test that needs to set
+// authorization or storage expectations alongside the analyzer.
+func newUCWithAnalyzer() (*usecases, *mockDocumentsStore, *mockFoyersStore, *mockStorage, *mockAnalyzer) {
+	uc, docs, foy, _, _, stor, _ := newUC()
+	an := &mockAnalyzer{}
+	uc.analyzer = an
+	return uc, docs, foy, stor, an
 }
 
 // ─── RequestUploadURL ──────────────────────────────────────────────
@@ -383,5 +407,148 @@ func TestDelete(t *testing.T) {
 
 		err := uc.Delete(ctx, "doc-abc", "uid-rdc")
 		So(err, ShouldBeNil)
+	})
+}
+
+// ─── Analyze ────────────────────────────────────────────────────────
+
+func TestAnalyze(t *testing.T) {
+	ctx := context.Background()
+	docID := "abcd1234-doc-id"
+
+	existingFresh := func() *entities.Document {
+		return &entities.Document{
+			ID:          docID,
+			ObjectName:  "documents/" + docID + ".jpg",
+			ContentType: "image/jpeg",
+		}
+	}
+
+	expenseVerdict := &entities.DocumentAnalysis{
+		Kind:       entities.DocumentKindExpense,
+		Confidence: 0.92,
+		Model:      "gemini-2.5-flash",
+		Expense: &entities.ExpenseExtraction{
+			AmountEUR: 127.50,
+			Date:      "2026-03-15",
+			Vendor:    "EDF",
+		},
+	}
+
+	Convey("First analysis: reads bytes, calls analyzer, persists, returns enriched doc", t, func() {
+		uc, docs, foy, stor, an := newUCWithAnalyzer()
+		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
+		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
+		docs.On("FindByID", ctx, docID).Return(existingFresh(), nil)
+		stor.On("Read", ctx, "documents/"+docID+".jpg").Return([]byte("jpeg-bytes"), nil)
+		an.On("AnalyzeDocument", ctx, []byte("jpeg-bytes"), "image/jpeg").Return(expenseVerdict, nil)
+		docs.On("SetAnalysis", ctx, docID, mock.MatchedBy(func(a *entities.DocumentAnalysis) bool {
+			return a != nil && a.Kind == entities.DocumentKindExpense
+		})).Return(nil)
+
+		out, err := uc.Analyze(ctx, docID, "uid-rdc", false)
+		So(err, ShouldBeNil)
+		So(out.Analysis.Kind, ShouldEqual, entities.DocumentKindExpense)
+		So(out.Analysis.Expense.AmountEUR, ShouldEqual, 127.50)
+		// Catch refactor regressions where the impl drops calls but
+		// the test still passes because On(...) registrations silently
+		// no-op (BH-MED-8).
+		an.AssertExpectations(t)
+		docs.AssertExpectations(t)
+		stor.AssertExpectations(t)
+	})
+
+	Convey("Cached analysis: returns existing without calling analyzer or storage", t, func() {
+		uc, docs, foy, stor, an := newUCWithAnalyzer()
+		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
+		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
+		cached := existingFresh()
+		cached.Analysis = expenseVerdict
+		docs.On("FindByID", ctx, docID).Return(cached, nil)
+
+		out, err := uc.Analyze(ctx, docID, "uid-rdc", false)
+		So(err, ShouldBeNil)
+		So(out.Analysis, ShouldEqual, expenseVerdict)
+		an.AssertNotCalled(t, "AnalyzeDocument", mock.Anything, mock.Anything, mock.Anything)
+		stor.AssertNotCalled(t, "Read", mock.Anything, mock.Anything)
+		// Cache hit must NOT re-persist the verdict — a regression
+		// that does would write to Firestore on every fetch.
+		docs.AssertNotCalled(t, "SetAnalysis", mock.Anything, mock.Anything, mock.Anything)
+	})
+
+	Convey("force=true bypasses cache and re-analyzes", t, func() {
+		uc, docs, foy, stor, an := newUCWithAnalyzer()
+		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
+		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
+		cached := existingFresh()
+		cached.Analysis = expenseVerdict
+		docs.On("FindByID", ctx, docID).Return(cached, nil)
+		stor.On("Read", ctx, "documents/"+docID+".jpg").Return([]byte("jpeg-bytes"), nil)
+		newVerdict := &entities.DocumentAnalysis{Kind: entities.DocumentKindOther, Confidence: 0.4, Reason: "AG minutes"}
+		an.On("AnalyzeDocument", ctx, []byte("jpeg-bytes"), "image/jpeg").Return(newVerdict, nil)
+		docs.On("SetAnalysis", ctx, docID, mock.AnythingOfType("*entities.DocumentAnalysis")).Return(nil)
+
+		out, err := uc.Analyze(ctx, docID, "uid-rdc", true)
+		So(err, ShouldBeNil)
+		So(out.Analysis.Kind, ShouldEqual, entities.DocumentKindOther)
+		an.AssertExpectations(t)
+		docs.AssertExpectations(t)
+		stor.AssertExpectations(t)
+	})
+
+	Convey("Analyzer nil → ErrFeatureDisabled (only after authz passes)", t, func() {
+		uc, _, foy, _, _, _, _ := newUC() // analyzer left nil
+		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
+		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
+		_, err := uc.Analyze(ctx, docID, "uid-rdc", false)
+		So(errors.Is(err, domainerrors.ErrFeatureDisabled), ShouldBeTrue)
+	})
+
+	Convey("Unauthenticated caller is rejected before feature-state is exposed", t, func() {
+		uc, _, foy, _, _, _, _ := newUC()
+		// Empty actor → loadBothFoyers still happens, but the lookup
+		// inside RequireFoyerMember returns AuthorizationError before
+		// any analyzer/storage/id checks would leak posture.
+		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
+		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
+		_, err := uc.Analyze(ctx, docID, "stranger-uid", false)
+		So(err, ShouldNotBeNil)
+		// The first gate is authorization; feature-disabled never fires.
+		So(errors.Is(err, domainerrors.ErrFeatureDisabled), ShouldBeFalse)
+	})
+
+	Convey("Document not found → ErrNotFound", t, func() {
+		uc, docs, foy, _, _ := newUCWithAnalyzer()
+		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
+		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
+		docs.On("FindByID", ctx, "ghost").Return((*entities.Document)(nil), nil)
+
+		_, err := uc.Analyze(ctx, "ghost", "uid-rdc", false)
+		So(errors.Is(err, domainerrors.ErrNotFound), ShouldBeTrue)
+	})
+
+	Convey("Analyzer error surfaces (not silently swallowed)", t, func() {
+		uc, docs, foy, stor, an := newUCWithAnalyzer()
+		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
+		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
+		docs.On("FindByID", ctx, docID).Return(existingFresh(), nil)
+		stor.On("Read", ctx, "documents/"+docID+".jpg").Return([]byte("jpeg-bytes"), nil)
+		an.On("AnalyzeDocument", ctx, []byte("jpeg-bytes"), "image/jpeg").
+			Return((*entities.DocumentAnalysis)(nil), domainerrors.ErrFeatureCapped)
+
+		_, err := uc.Analyze(ctx, docID, "uid-rdc", false)
+		So(errors.Is(err, domainerrors.ErrFeatureCapped), ShouldBeTrue)
+	})
+
+	Convey("Storage read failure short-circuits with a wrapped error", t, func() {
+		uc, docs, foy, stor, an := newUCWithAnalyzer()
+		foy.On("FindByFloor", ctx, entities.FoyerFloorRDC).Return(rdc, nil)
+		foy.On("FindByFloor", ctx, entities.FoyerFloor1er).Return(premier, nil)
+		docs.On("FindByID", ctx, docID).Return(existingFresh(), nil)
+		stor.On("Read", ctx, "documents/"+docID+".jpg").Return(([]byte)(nil), errors.New("gcs boom"))
+
+		_, err := uc.Analyze(ctx, docID, "uid-rdc", false)
+		So(err, ShouldNotBeNil)
+		an.AssertNotCalled(t, "AnalyzeDocument", mock.Anything, mock.Anything, mock.Anything)
 	})
 }

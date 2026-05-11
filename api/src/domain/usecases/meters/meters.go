@@ -613,19 +613,16 @@ func (uc *usecases) DeletePhoto(ctx context.Context, period string, kind entitie
 	return updated, nil
 }
 
-// SuggestPhotoValues runs OCR against an already-recorded photo and
-// returns the most likely numeric reading(s). For the global meter:
-// pick the candidate with the largest font height + plausible digit
-// count (filters out serial / model labels). For the 3-meter detail
-// panel: cluster numbers into per-meter groups, identify the BLUE
-// housing as `common` via pixel sampling, and order the other two by
-// distance to common (closer = 1er, farther = RDC) per the panel's
-// physical layout.
+// SuggestPhotoValues asks the MeterReader (Vertex AI Gemini in prod)
+// to interpret an already-recorded meter photo and returns the
+// reading(s). For `global` kind: 1 value from the main building dial.
+// For `detail` kind: 3 values [common, rdc, premier] — the model
+// identifies the blue common meter and orders the other two by
+// physical adjacency (closer = 1er, farther = RDC) per the prompt.
 //
-// Heuristic, NOT magic — the user reviews the values before saving.
-// Returns an empty suggestion (not an error) when the reader is
-// disabled, capped, or hiccups so the UI cleanly falls back to manual
-// entry.
+// The user always reviews values before saving. Returns an empty
+// suggestion (not an error) when the reader is disabled, capped, or
+// hiccups so the UI cleanly falls back to manual entry.
 func (uc *usecases) SuggestPhotoValues(ctx context.Context, period string, kind entities.MeterPhotoKind, actorUserID string) (*OCRSuggestion, error) {
 	log := uc.logger.With(
 		zap.String("method", "SuggestPhotoValues"),
@@ -687,11 +684,20 @@ func (uc *usecases) SuggestRawPhotoValues(ctx context.Context, kind entities.Met
 	if err := uc.authorize(ctx, actorUserID); err != nil {
 		return nil, err
 	}
-	// Sniff MIME from magic bytes — the route already enforces the
-	// allow-list, so this is just to feed Gemini the correct hint.
+	// Sniff MIME from magic bytes for Gemini's inline-data hint. The
+	// route already enforces the allow-list against multipart-declared
+	// type, but defense-in-depth: re-validate the sniffed type here in
+	// case a direct usecase caller (test, future cron) skipped the
+	// route. http.DetectContentType returns "application/octet-stream"
+	// for HEIC and a few other formats it can't classify; fall back
+	// to image/jpeg in that case so iPhone uploads still feed Gemini
+	// a usable hint instead of an opaque octet-stream.
 	mimeType := http.DetectContentType(image)
-	if parsed, _, err := mime.ParseMediaType(mimeType); err == nil && parsed != "" {
-		mimeType = parsed
+	if mimeType == "application/octet-stream" {
+		mimeType = "image/jpeg"
+	}
+	if !entities.IsAllowedMeterPhotoMime(mimeType) {
+		return &OCRSuggestion{}, nil
 	}
 	return uc.analyzeImage(ctx, kind, image, mimeType), nil
 }

@@ -10,11 +10,25 @@ import (
 	"github.com/titouanfreville/copro-manager/api/src/domain/entities"
 )
 
-// ReadMeterPhoto interprets a water-meter photo and returns the
-// digit reading(s) Gemini extracted, plus a self-reported confidence.
+// maxMeterValueM3 is the upper sanity bound on any single reading.
+// Residential meters never exceed five digits to the left of the
+// decimal in our experience; 10 000 000 m³ is well past any plausible
+// real value and catches Gemini hallucinations that the schema's
+// type-only constraint can't stop.
+const maxMeterValueM3 = 10_000_000.0
+
+// ReadMeterPhoto interprets a water-meter photo and returns the digit
+// reading(s) Gemini extracted, plus a self-reported confidence.
 //
 // kind=global → 1 value (main building dial, m³ to 3 decimals).
-// kind=detail → 3 values [common, rdc, premier], each m³ to 3 decimals.
+// kind=detail → 3 values [common, rdc, premier], m³ to 3 decimals.
+//
+// The wire format Gemini produces is a LABELED object per kind
+// (e.g. `{"common": x, "rdc": y, "premier": z, "confidence": c}` for
+// detail) — never a positional array. This guards against prompt
+// drift silently swapping RDC ↔ 1er readings: the JSON schema +
+// unmarshal enforce the slot identity, and the slice we return is
+// assembled Go-side in a canonical order.
 //
 // Implements interfaces.MeterReader.
 func (c *Client) ReadMeterPhoto(
@@ -33,11 +47,11 @@ func (c *Client) ReadMeterPhoto(
 		mimeType = "image/jpeg"
 	}
 
-	expected, err := expectedValueCount(kind)
+	prompt, err := promptForMeter(kind)
 	if err != nil {
 		return nil, 0, err
 	}
-	prompt, err := promptForMeter(kind)
+	schema, err := meterSchemaFor(kind)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -48,7 +62,7 @@ func (c *Client) ReadMeterPhoto(
 	}
 	cfg := &genai.GenerateContentConfig{
 		ResponseMIMEType: "application/json",
-		ResponseSchema:   meterSchema(expected),
+		ResponseSchema:   schema,
 		Temperature:      ptrF32(0),
 	}
 	resp, err := c.c.Models.GenerateContent(
@@ -57,52 +71,91 @@ func (c *Client) ReadMeterPhoto(
 		[]*genai.Content{{Role: genai.RoleUser, Parts: parts}},
 		cfg,
 	)
+	// Record the call regardless of post-call parsing success: the
+	// Vertex AI bill is incurred as soon as GenerateContent returns,
+	// so the counter must mirror that even when we fail to interpret
+	// the response.
+	if resp != nil || err == nil {
+		c.recordCall(ctx)
+	}
 	if err != nil {
 		return nil, 0, fmt.Errorf("gemini: generate content: %w", err)
 	}
-	c.recordCall(ctx)
 
-	var parsed struct {
-		Values     []float64 `json:"values"`
-		Confidence float64   `json:"confidence"`
-	}
 	body := resp.Text()
 	if body == "" {
 		return nil, 0, fmt.Errorf("gemini: empty response")
 	}
-	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
-		return nil, 0, fmt.Errorf("gemini: parse response: %w", err)
+
+	values, confidence, err := parseMeterResponse(kind, body)
+	if err != nil {
+		return nil, 0, err
 	}
-	if len(parsed.Values) != expected {
-		return nil, 0, fmt.Errorf("gemini: expected %d values, got %d", expected, len(parsed.Values))
+	for _, v := range values {
+		if v < 0 || v > maxMeterValueM3 {
+			return nil, 0, fmt.Errorf("gemini: value out of plausible range: %.3f", v)
+		}
 	}
-	if parsed.Confidence < 0 {
-		parsed.Confidence = 0
+	if confidence < 0 {
+		confidence = 0
 	}
-	if parsed.Confidence > 1 {
-		parsed.Confidence = 1
+	if confidence > 1 {
+		confidence = 1
 	}
-	return parsed.Values, parsed.Confidence, nil
+	return values, confidence, nil
 }
 
-// expectedValueCount returns the number of meter readings the given
-// kind should produce. Used both as a contract assertion on the
-// response and as MinItems/MaxItems for the response schema.
-func expectedValueCount(kind entities.MeterPhotoKind) (int, error) {
+// parseMeterResponse decodes Gemini's per-kind JSON into the canonical
+// positional slice the usecase expects. Each kind has its own labeled
+// shape; the unmarshal step enforces structural fit instead of relying
+// on positional ordering.
+//
+// Pointer-typed numeric fields detect missing keys: Vertex AI's
+// schema-Required enforcement is best-effort, and a missing `premier`
+// would otherwise unmarshal as 0.0 and silently prefill the UI with
+// zero for that slot. A nil pointer here surfaces as ErrAnalysisFailed
+// so the frontend retries instead.
+func parseMeterResponse(kind entities.MeterPhotoKind, body string) ([]float64, float64, error) {
 	switch kind {
 	case entities.MeterPhotoKindGlobal:
-		return 1, nil
+		var p struct {
+			Value      *float64 `json:"value"`
+			Confidence *float64 `json:"confidence"`
+		}
+		if err := json.Unmarshal([]byte(body), &p); err != nil {
+			return nil, 0, fmt.Errorf("gemini: parse global response: %w", err)
+		}
+		if p.Value == nil || p.Confidence == nil {
+			return nil, 0, fmt.Errorf("gemini: missing required field(s) in global response")
+		}
+		return []float64{*p.Value}, *p.Confidence, nil
+
 	case entities.MeterPhotoKindDetail:
-		return 3, nil
+		var p struct {
+			Common     *float64 `json:"common"`
+			RDC        *float64 `json:"rdc"`
+			Premier    *float64 `json:"premier"`
+			Confidence *float64 `json:"confidence"`
+		}
+		if err := json.Unmarshal([]byte(body), &p); err != nil {
+			return nil, 0, fmt.Errorf("gemini: parse detail response: %w", err)
+		}
+		if p.Common == nil || p.RDC == nil || p.Premier == nil || p.Confidence == nil {
+			return nil, 0, fmt.Errorf("gemini: missing required field(s) in detail response")
+		}
+		// Canonical order matches the usecase + frontend contract:
+		// [common, rdc, premier].
+		return []float64{*p.Common, *p.RDC, *p.Premier}, *p.Confidence, nil
+
 	default:
-		return 0, fmt.Errorf("gemini: unknown meter photo kind %q", kind)
+		return nil, 0, fmt.Errorf("gemini: unknown meter photo kind %q", kind)
 	}
 }
 
 // promptForMeter returns the French prompt steering the model toward
-// the correct extraction. Kept minimal — Gemini handles the visual
-// reasoning (red drum decimals, dial vs serial labels, panel layout)
-// natively; over-prompting hurts accuracy.
+// the correct extraction. The output shape is labeled per kind so the
+// JSON parser can enforce slot identity (vs. a positional array which
+// would silently swap RDC and 1er on prompt drift).
 func promptForMeter(kind entities.MeterPhotoKind) (string, error) {
 	switch kind {
 	case entities.MeterPhotoKindGlobal:
@@ -122,7 +175,7 @@ Exemples de format attendu :
 
 NE SAUTE AUCUN CHIFFRE — vérifie que la valeur finale a bien le même nombre de positions que ce que tu vois sur le tambour. Si tu hésites entre deux longueurs (par ex. 4 vs 5 chiffres entiers), recompte les positions du tambour blanc avant de répondre.
 
-Renvoie {"values": [valeur_m3], "confidence": 0..1}.
+Renvoie {"value": valeur_m3, "confidence": 0..1}.
 Si la photo est floue, illisible, ou ne montre pas un compteur, mets confidence < 0.3.`, nil
 
 	case entities.MeterPhotoKindDetail:
@@ -146,7 +199,7 @@ Exemples concrets vus sur ces compteurs :
 
 NE SAUTE AUCUN CHIFFRE. Erreur fréquente : lire "7452" au lieu de "74525" → tu obtiens 7.452 alors que la vraie valeur est 74.525. Compte précisément les positions du tambour blanc avant de répondre. Les sous-compteurs RDC et 1er ont typiquement 7 positions au total (4 blancs + 3 rouges), le commun bleu a typiquement 7 ou 8 positions.
 
-Renvoie {"values": [commun, rdc, premier], "confidence": 0..1}, dans cet ordre exact (commun d'abord, puis RDC, puis 1er).
+Renvoie un objet ÉTIQUETÉ {"common": valeur_commun_bleu, "rdc": valeur_rdc, "premier": valeur_premier_etage, "confidence": 0..1}. Chaque clé identifie EXPLICITEMENT le sous-compteur — n'inverse pas RDC et 1er.
 Si tu ne peux pas distinguer les 3 sous-compteurs avec certitude (compteur bleu non visible, positions ambiguës, photo trop floue pour compter les positions du tambour), mets confidence < 0.5.`, nil
 
 	default:
@@ -154,31 +207,54 @@ Si tu ne peux pas distinguer les 3 sous-compteurs avec certitude (compteur bleu 
 	}
 }
 
-// meterSchema builds the JSON schema constraining Gemini's response.
-// Required count of values is fixed per kind (1 for global, 3 for
-// detail) so the model can't return a partial reading.
-func meterSchema(expectedValues int) *genai.Schema {
-	count := int64(expectedValues)
+// meterSchemaFor builds the JSON schema constraining Gemini's response
+// per kind. Numeric items are bounded to [0, maxMeterValueM3] so the
+// model can't return negative or wildly-implausible values; confidence
+// is bounded to [0, 1].
+func meterSchemaFor(kind entities.MeterPhotoKind) (*genai.Schema, error) {
 	min0 := float64(0)
+	maxV := float64(maxMeterValueM3)
 	max1 := float64(1)
-	return &genai.Schema{
-		Type: genai.TypeObject,
-		Properties: map[string]*genai.Schema{
-			"values": {
-				Type:        genai.TypeArray,
-				Description: "Lectures en m³, 3 décimales",
-				Items:       &genai.Schema{Type: genai.TypeNumber},
-				MinItems:    &count,
-				MaxItems:    &count,
+	confidenceField := &genai.Schema{
+		Type:        genai.TypeNumber,
+		Description: "Auto-évaluation 0..1 de la lisibilité",
+		Minimum:     &min0,
+		Maximum:     &max1,
+	}
+	valueField := func(label string) *genai.Schema {
+		return &genai.Schema{
+			Type:        genai.TypeNumber,
+			Description: label + " en m³, 3 décimales",
+			Minimum:     &min0,
+			Maximum:     &maxV,
+		}
+	}
+
+	switch kind {
+	case entities.MeterPhotoKindGlobal:
+		return &genai.Schema{
+			Type: genai.TypeObject,
+			Properties: map[string]*genai.Schema{
+				"value":      valueField("Lecture du compteur général"),
+				"confidence": confidenceField,
 			},
-			"confidence": {
-				Type:        genai.TypeNumber,
-				Description: "Auto-évaluation 0..1 de la lisibilité",
-				Minimum:     &min0,
-				Maximum:     &max1,
+			Required: []string{"value", "confidence"},
+		}, nil
+
+	case entities.MeterPhotoKindDetail:
+		return &genai.Schema{
+			Type: genai.TypeObject,
+			Properties: map[string]*genai.Schema{
+				"common":     valueField("Sous-compteur commun (bleu)"),
+				"rdc":        valueField("Sous-compteur RDC"),
+				"premier":    valueField("Sous-compteur 1er étage"),
+				"confidence": confidenceField,
 			},
-		},
-		Required: []string{"values", "confidence"},
+			Required: []string{"common", "rdc", "premier", "confidence"},
+		}, nil
+
+	default:
+		return nil, fmt.Errorf("gemini: unknown meter photo kind %q", kind)
 	}
 }
 

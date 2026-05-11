@@ -2,6 +2,7 @@ package routes
 
 import (
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -205,4 +206,27 @@ func (e *Endpoints) GetDocumentDownloadURL(w http.ResponseWriter, r *http.Reques
 		DownloadURL: url,
 		ExpiresAt:   expiresAt,
 	})
+}
+
+// AnalyzeDocument handles POST /documents/{id}/analyze. Runs Gemini
+// classification + extraction (cached on the document; `?force=true`
+// bypasses the cache). Returns the full Document with Analysis set.
+func (e *Endpoints) AnalyzeDocument(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		rest.Render().JSON(http.StatusBadRequest, w, r, routeerrors.NewServErrors("INVALID_ID", "missing document id"))
+		return
+	}
+	// strconv.ParseBool accepts the standard truthy set (1/t/T/TRUE/
+	// true/True) instead of the strict "true" match — friendlier to
+	// shell users and matches how Go's standard library treats bools.
+	force, _ := strconv.ParseBool(r.URL.Query().Get("force"))
+	actorUID, _ := r.Context().Value(shared.UserID).(string)
+	doc, err := e.usecases.Documents.Analyze(r.Context(), id, actorUID, force)
+	if err != nil {
+		status, body := routeerrors.ManageErrors(err)
+		rest.Render().JSON(status, w, r, body)
+		return
+	}
+	rest.Render().JSON(http.StatusOK, w, r, doc)
 }

@@ -135,6 +135,9 @@ func (m *mockDocumentsStore) CountByLinkedContract(ctx context.Context, contract
 	args := m.Called(ctx, contractID)
 	return args.Int(0), args.Error(1)
 }
+func (m *mockDocumentsStore) SetAnalysis(ctx context.Context, id string, analysis *entities.DocumentAnalysis) error {
+	return m.Called(ctx, id, analysis).Error(0)
+}
 
 type mockFoyersStore struct{ mock.Mock }
 

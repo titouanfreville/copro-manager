@@ -11,6 +11,7 @@ import (
 	uberzap "go.uber.org/zap"
 
 	authadapter "github.com/titouanfreville/copro-manager/api/src/adapters/auth"
+	aiusagestore "github.com/titouanfreville/copro-manager/api/src/adapters/store/aiusage"
 	alertsstore "github.com/titouanfreville/copro-manager/api/src/adapters/store/alerts"
 	categoriesstore "github.com/titouanfreville/copro-manager/api/src/adapters/store/categories"
 	contractsstore "github.com/titouanfreville/copro-manager/api/src/adapters/store/contracts"
@@ -23,7 +24,6 @@ import (
 	settlementsstore "github.com/titouanfreville/copro-manager/api/src/adapters/store/settlements"
 	templatesstore "github.com/titouanfreville/copro-manager/api/src/adapters/store/templates"
 	usersstore "github.com/titouanfreville/copro-manager/api/src/adapters/store/users"
-	aiusagestore "github.com/titouanfreville/copro-manager/api/src/adapters/store/aiusage"
 	validatorsadapter "github.com/titouanfreville/copro-manager/api/src/adapters/validators"
 	"github.com/titouanfreville/copro-manager/api/src/core/config"
 	"github.com/titouanfreville/copro-manager/api/src/domain/entities"
@@ -46,10 +46,10 @@ import (
 	"github.com/titouanfreville/copro-manager/api/src/services/firebase"
 	"github.com/titouanfreville/copro-manager/api/src/services/firestore"
 	"github.com/titouanfreville/copro-manager/api/src/services/fxapp"
+	geminisvc "github.com/titouanfreville/copro-manager/api/src/services/gemini"
 	"github.com/titouanfreville/copro-manager/api/src/services/otel"
 	pushsvc "github.com/titouanfreville/copro-manager/api/src/services/push"
 	"github.com/titouanfreville/copro-manager/api/src/services/storage"
-	geminisvc "github.com/titouanfreville/copro-manager/api/src/services/gemini"
 	"github.com/titouanfreville/copro-manager/api/src/services/zap"
 )
 
@@ -100,7 +100,16 @@ func main() {
 				fx.As(new(interfaces.AIUsageStore)),
 			),
 			fx.Annotate(
-				func(lc fx.Lifecycle, cfg *config.Config, usage interfaces.AIUsageStore) (*geminisvc.Client, error) {
+				func(lc fx.Lifecycle, cfg *config.Config, usage interfaces.AIUsageStore, log *uberzap.Logger) (*geminisvc.Client, error) {
+					// Operator-misconfig sentinel: silent cap-off would
+					// let runaway billing slip past NFR31. Loud warning
+					// at boot so the operator notices in the first log
+					// scroll, even if no calls ever fire.
+					if cfg.Gemini.Enabled && cfg.Gemini.MonthlyCallCap <= 0 {
+						log.Warn("gemini.monthly_call_cap is <= 0; no per-month cap will be enforced — Vertex AI calls are uncapped",
+							uberzap.Int64("monthly_call_cap", cfg.Gemini.MonthlyCallCap),
+						)
+					}
 					c, err := geminisvc.NewClient(cfg.Gemini, usage)
 					if err != nil {
 						return nil, err
@@ -112,7 +121,11 @@ func main() {
 					})
 					return c, nil
 				},
+				// Same Gemini client serves both consumers (and any future
+				// chat assistant). Multiple fx.As registrations bind the
+				// single concrete instance to several interface types.
 				fx.As(new(interfaces.MeterReader)),
+				fx.As(new(interfaces.DocumentAnalyzer)),
 			),
 
 			firebase.NewApp,

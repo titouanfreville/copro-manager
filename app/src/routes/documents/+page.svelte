@@ -8,19 +8,21 @@
 	import IconButton from '$lib/components/IconButton.svelte';
 	import PhotoCapture from '$lib/components/PhotoCapture.svelte';
 	import {
+		analyzeDocument,
 		deleteDocument,
 		getDocumentDownloadUrl,
 		isImageDocument,
 		updateDocument,
 		uploadDocument
 	} from '$lib/documents';
+	import { setDocHandoff } from '$lib/docHandoff';
 	import {
 		subscribeCategories,
 		subscribeDocuments,
 		subscribeExpenses,
 		subscribeFoyers
 	} from '$lib/live';
-	import type { Category, Document, Expense, Foyer } from '$lib/api';
+	import type { Category, Document, DocumentAnalysis, Expense, Foyer } from '$lib/api';
 
 	// ─── Live data ─────────────────────────────────────────────
 	let foyers = $state<Foyer[]>([]);
@@ -59,6 +61,8 @@
 		uploaded_at: string;
 		linked_expense_id?: string;
 		linked_expense_name?: string;
+		linked_contract_id?: string;
+		analysis?: DocumentAnalysis;
 	};
 
 	let archive = $derived.by(() => {
@@ -77,7 +81,9 @@
 				content_type: d.content_type,
 				uploaded_at: d.uploaded_at,
 				linked_expense_id: d.linked_expense_id,
-				linked_expense_name: linkedExp?.name
+				linked_expense_name: linkedExp?.name,
+				linked_contract_id: d.linked_contract_id,
+				analysis: d.analysis
 			});
 		}
 		return out;
@@ -383,6 +389,73 @@
 		if (standalone) openEdit(standalone);
 	}
 
+	// ─── Gemini analysis ───────────────────────────────────────
+	// Lazy classifier + extractor. Triggered by the user, result is
+	// cached server-side on the Document; the live subscription picks
+	// it up automatically. `force` is only used after a Gemini upgrade
+	// or when the user clicks "Re-analyser".
+	let analyzingId = $state<string | null>(null);
+	let analyzeError = $state('');
+
+	async function onAnalyze(d: ArchiveDoc, force = false) {
+		if (analyzingId) return;
+		analyzeError = '';
+		analyzingId = d.id;
+		try {
+			await analyzeDocument(d.id, { force });
+			// The live Firestore subscription will surface `.analysis` —
+			// nothing to do here beyond the fire-and-forget call.
+		} catch (err) {
+			analyzeError =
+				err instanceof ApiError ? `${err.code}: ${err.message}` : String(err);
+		} finally {
+			analyzingId = null;
+		}
+	}
+
+	function onCreateExpenseFromDoc(d: ArchiveDoc) {
+		if (!d.analysis?.expense) return;
+		setDocHandoff({
+			kind: 'expense',
+			doc_id: d.id,
+			doc_title: d.title,
+			extraction: d.analysis.expense
+		});
+		goto('/expenses');
+	}
+
+	function onCreateContractFromDoc(d: ArchiveDoc) {
+		if (!d.analysis?.contract) return;
+		setDocHandoff({
+			kind: 'contract',
+			doc_id: d.id,
+			doc_title: d.title,
+			extraction: d.analysis.contract
+		});
+		goto('/contracts');
+	}
+
+	function formatAnalysisLabel(a: DocumentAnalysis): string {
+		const conf = `${Math.round(a.confidence * 100)} %`;
+		if (a.kind === 'expense' && a.expense) {
+			const parts: string[] = [];
+			if (a.expense.vendor) parts.push(a.expense.vendor);
+			if (a.expense.amount_eur != null)
+				parts.push(`${a.expense.amount_eur.toFixed(2)} €`);
+			if (a.expense.date) parts.push(a.expense.date);
+			return `Dépense · ${parts.join(' · ') || 'à vérifier'} (${conf})`;
+		}
+		if (a.kind === 'contract' && a.contract) {
+			const parts: string[] = [];
+			if (a.contract.provider) parts.push(a.contract.provider);
+			if (a.contract.contract_type) parts.push(a.contract.contract_type);
+			if (a.contract.monthly_amount_eur != null)
+				parts.push(`${a.contract.monthly_amount_eur.toFixed(2)} €/mois`);
+			return `Contrat · ${parts.join(' · ') || 'à vérifier'} (${conf})`;
+		}
+		return `Autre · ${a.reason || 'pas de classification claire'} (${conf})`;
+	}
+
 	function onKeydown(e: KeyboardEvent) {
 		if (e.key === 'Escape' && modalOpen) closeModal();
 	}
@@ -421,6 +494,10 @@
 
 			{#if liveError}
 				<div class="error-card" role="alert">{liveError}</div>
+			{/if}
+
+			{#if analyzeError}
+				<div class="error-card" role="alert">{analyzeError}</div>
 			{/if}
 
 			<section class="controls">
@@ -512,6 +589,58 @@
 											<p class="card-foot">
 												{formatDate(d.uploaded_at)} · {formatSize(d.size_bytes)}
 											</p>
+											{#if d.analysis}
+												<div
+													class="analysis-banner"
+													class:analysis-low={d.analysis.confidence < 0.5}
+												>
+													<span class="analysis-label">
+														{formatAnalysisLabel(d.analysis)}
+													</span>
+													<div class="analysis-actions">
+														{#if d.analysis.kind === 'expense' && d.analysis.expense && !d.linked_expense_id}
+															<button
+																type="button"
+																class="analysis-cta"
+																onclick={() => onCreateExpenseFromDoc(d)}
+															>
+																Créer dépense
+															</button>
+														{/if}
+														{#if d.analysis.kind === 'contract' && d.analysis.contract && !d.linked_contract_id}
+															<button
+																type="button"
+																class="analysis-cta"
+																onclick={() => onCreateContractFromDoc(d)}
+															>
+																Créer contrat
+															</button>
+														{/if}
+														<button
+															type="button"
+															class="analysis-rerun"
+															aria-busy={analyzingId === d.id}
+															onclick={() => onAnalyze(d, true)}
+															disabled={analyzingId !== null}
+															title="Relancer l'analyse"
+														>
+															↻
+														</button>
+													</div>
+												</div>
+											{:else if !d.linked_expense_id}
+												<button
+													type="button"
+													class="analyze-trigger"
+													aria-busy={analyzingId === d.id}
+													onclick={() => onAnalyze(d)}
+													disabled={analyzingId !== null}
+												>
+													🪄 {analyzingId === d.id
+														? 'Analyse en cours…'
+														: 'Analyser le contenu'}
+												</button>
+											{/if}
 										</div>
 										<div class="card-actions">
 											<IconButton
@@ -976,6 +1105,84 @@
 		gap: 0.3rem;
 		padding: 0.4rem 0.7rem 0.7rem;
 		justify-content: flex-end;
+	}
+
+	/* ─── Gemini analysis surface ───────────────────────────────── */
+	.analyze-trigger {
+		margin-top: 0.5rem;
+		align-self: flex-start;
+		padding: 0.3rem 0.6rem;
+		border: 1px dashed var(--ink-3);
+		background: transparent;
+		color: var(--ink-2);
+		border-radius: 0.4rem;
+		font-size: 0.75rem;
+		cursor: pointer;
+		font-family: inherit;
+	}
+	.analyze-trigger:hover:not(:disabled) {
+		border-style: solid;
+		background: var(--surface-2);
+	}
+	.analyze-trigger[aria-busy='true'] {
+		opacity: 0.6;
+		cursor: progress;
+	}
+	.analysis-banner {
+		margin-top: 0.5rem;
+		padding: 0.45rem 0.6rem;
+		border-radius: 0.4rem;
+		background: var(--surface-2);
+		border-left: 3px solid var(--brand);
+		display: flex;
+		flex-direction: column;
+		gap: 0.35rem;
+	}
+	.analysis-banner.analysis-low {
+		border-left-color: var(--warn, #c87f00);
+	}
+	.analysis-label {
+		font-size: 0.75rem;
+		font-weight: 500;
+		color: var(--ink-2);
+		font-feature-settings: 'tnum';
+	}
+	.analysis-actions {
+		display: flex;
+		gap: 0.35rem;
+		flex-wrap: wrap;
+	}
+	.analysis-cta {
+		padding: 0.25rem 0.6rem;
+		font-size: 0.7rem;
+		font-weight: 500;
+		background: var(--brand);
+		color: var(--brand-ink, #fff);
+		border: none;
+		border-radius: 0.3rem;
+		cursor: pointer;
+		font-family: inherit;
+	}
+	.analysis-cta:hover {
+		filter: brightness(1.05);
+	}
+	.analysis-rerun {
+		padding: 0.25rem 0.5rem;
+		font-size: 0.85rem;
+		line-height: 1;
+		background: transparent;
+		color: var(--ink-3);
+		border: 1px solid var(--ink-5, #ddd);
+		border-radius: 0.3rem;
+		cursor: pointer;
+	}
+	.analysis-rerun:hover:not(:disabled) {
+		color: var(--ink-1);
+		border-color: var(--ink-3);
+	}
+	.analysis-rerun[aria-busy='true'] {
+		opacity: 0.6;
+		cursor: progress;
 	}
 
 	.modal-backdrop {

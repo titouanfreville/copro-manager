@@ -33,6 +33,7 @@
 	} from '$lib/live';
 	import { computeDeltas, computeWaterShare } from '$lib/meters';
 	import { createCategory } from '$lib/categories';
+	import { clearDocHandoff, peekDocHandoff } from '$lib/docHandoff';
 	import {
 		createSettlement,
 		deleteSettlement,
@@ -43,6 +44,7 @@
 		Category,
 		CreateSettlementInput,
 		DistributionMode,
+		ExpenseExtraction,
 		Expense,
 		ExpenseTemplate,
 		Foyer,
@@ -995,6 +997,77 @@
 		modalOpen = true;
 	}
 
+	// ─── Doc → Expense handoff ──────────────────────────────────
+	// When the user clicks "Créer dépense" on a /documents card, the
+	// extraction lands in sessionStorage. We consume it once `live`
+	// data is ready (so category matching has the list to search) and
+	// open the create modal pre-filled. The doc itself stays
+	// standalone — manual link is a follow-up the user can do later.
+	let docHandoffNotice = $state('');
+	let handoffConsumed = $state(false);
+
+	$effect(() => {
+		if (!live || handoffConsumed) return;
+		// Peek first: if a contract handoff is pending we leave it
+		// alone so /contracts can pick it up. The handoff is cleared
+		// only on save-success — cancelling the prefilled modal
+		// preserves the payload so a re-visit recovers it.
+		const handoff = peekDocHandoff();
+		if (!handoff || handoff.kind !== 'expense') return;
+		handoffConsumed = true;
+		applyDocExpenseExtraction(handoff.extraction, handoff.doc_title);
+	});
+
+	/**
+	 * Calendar-validity check beyond the ISO regex. `new Date("2026-02-30")`
+	 * silently normalizes to March 2 — round-trip the parsed date to its
+	 * ISO form and require an exact match to reject calendar-invalid input.
+	 */
+	function isValidIsoDate(s: string): boolean {
+		if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+		const d = new Date(s);
+		if (Number.isNaN(d.getTime())) return false;
+		return d.toISOString().slice(0, 10) === s;
+	}
+
+	function matchCategoryId(hint: string | undefined): string {
+		if (!hint) return '';
+		const needle = hint.toLocaleLowerCase('fr').trim();
+		if (!needle) return '';
+		const exact = categories.find(
+			(c) => c.name.toLocaleLowerCase('fr') === needle
+		);
+		if (exact) return exact.id;
+		const partial = categories.find(
+			(c) =>
+				c.name.toLocaleLowerCase('fr').includes(needle) ||
+				needle.includes(c.name.toLocaleLowerCase('fr'))
+		);
+		return partial?.id ?? '';
+	}
+
+	function applyDocExpenseExtraction(ext: ExpenseExtraction, docTitle: string) {
+		resetForm();
+		if (ext.vendor) {
+			name = ext.vendor;
+		} else if (ext.description) {
+			name = ext.description;
+		}
+		if (typeof ext.amount_eur === 'number' && Number.isFinite(ext.amount_eur)) {
+			amountEuros = ext.amount_eur.toFixed(2);
+		}
+		if (ext.date && isValidIsoDate(ext.date)) {
+			date = ext.date;
+		}
+		const catID = matchCategoryId(ext.category_hint);
+		if (catID) categoryId = catID;
+		if (ext.description && !note) {
+			note = ext.description;
+		}
+		docHandoffNotice = `Pré-rempli depuis le document « ${docTitle} ». Vérifie les valeurs avant d'enregistrer.`;
+		modalOpen = true;
+	}
+
 	/** Pre-fill the form from an existing expense and open the modal in
 	 *  edit mode. Cents are rendered to 2-decimal € strings; the sub-mode
 	 *  defaults to "exact" because the operator is most likely fixing
@@ -1313,6 +1386,9 @@
 				}
 			}
 			modalOpen = false;
+			// Clear any pending doc-handoff now that the create succeeded.
+			// No-op when no handoff was active.
+			clearDocHandoff();
 			// Same defer-reset trick used in closeCreate so we don't blank
 			// the form before the closing animation finishes.
 			setTimeout(resetForm, 220);
@@ -2562,6 +2638,10 @@
 
 					{#if createError}
 						<p class="form-error" role="alert">{createError}</p>
+					{/if}
+
+					{#if docHandoffNotice}
+						<p class="form-notice" role="status">{docHandoffNotice}</p>
 					{/if}
 
 					<div class="modal-actions">
@@ -4490,6 +4570,15 @@
 		border: 1px solid rgba(183, 50, 35, 0.2);
 		padding: 0.55rem 0.75rem;
 		border-radius: 0.5rem;
+	}
+	.form-notice {
+		margin: 0;
+		color: var(--ink-2);
+		font-size: 0.8rem;
+		background: var(--surface-2);
+		border-left: 3px solid var(--brand);
+		padding: 0.5rem 0.75rem;
+		border-radius: 0.4rem;
 	}
 
 	/* =========================================================

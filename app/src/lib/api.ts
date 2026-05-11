@@ -194,6 +194,53 @@ export interface Document {
   uploaded_by: string;
   linked_expense_id?: string;
   linked_contract_id?: string;
+  /**
+   * Cached Gemini verdict — produced lazily by POST /documents/{id}/analyze.
+   * Absent until the user (or a future eager hook) triggers analysis.
+   */
+  analysis?: DocumentAnalysis;
+}
+
+export type DocumentAnalysisKind = "expense" | "contract" | "other";
+
+export interface DocumentAnalysis {
+  kind: DocumentAnalysisKind;
+  /** Self-reported model confidence ∈ [0, 1]. */
+  confidence: number;
+  /**
+   * ISO timestamp when the analysis was produced. May be an empty
+   * string when the Firestore document is missing the field (legacy
+   * rows, partial migrations). Consumers should treat as optional.
+   */
+  analyzed_at: string;
+  model: string;
+  /** Free-text justification — mainly useful for kind=other. */
+  reason?: string;
+  /** Populated when kind=expense. */
+  expense?: ExpenseExtraction;
+  /** Populated when kind=contract. */
+  contract?: ContractExtraction;
+}
+
+export interface ExpenseExtraction {
+  amount_eur?: number;
+  /** ISO YYYY-MM-DD. */
+  date?: string;
+  vendor?: string;
+  /** Free-text suggestion (e.g. "électricité"). */
+  category_hint?: string;
+  description?: string;
+}
+
+export interface ContractExtraction {
+  provider?: string;
+  contract_type?: string;
+  /** ISO YYYY-MM-DD. */
+  start_date?: string;
+  /** ISO YYYY-MM-DD. */
+  end_date?: string;
+  monthly_amount_eur?: number;
+  contract_number?: string;
 }
 
 export interface CreateDocumentInput {

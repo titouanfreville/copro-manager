@@ -6,12 +6,14 @@
 		type Category,
 		type Contact,
 		type Contract,
+		type ContractExtraction,
 		type ContractStatus,
 		type Document,
 		type ExpenseTemplate,
 		type Frequency,
 		type Society
 	} from '$lib/api';
+	import { clearDocHandoff, peekDocHandoff } from '$lib/docHandoff';
 	import { authState } from '$lib/auth';
 	import Button from '$lib/components/Button.svelte';
 	import Fab from '$lib/components/Fab.svelte';
@@ -210,6 +212,89 @@
 		modalOpen = true;
 	}
 
+	// ─── Doc → Contract handoff ─────────────────────────────────────
+	// Mirror of the expense path: the document classifier pre-fills the
+	// create-contract form when the user lands here from /documents.
+	let docHandoffNotice = $state('');
+	let handoffConsumed = $state(false);
+
+	$effect(() => {
+		if ($authState.status !== 'signed-in' || handoffConsumed) return;
+		// Peek (don't consume) so an expense handoff sitting in storage
+		// stays available for /expenses to pick up. `matchCategoryId`
+		// already short-circuits on an empty category list, so we no
+		// longer need a `categories.length === 0` guard that would
+		// strand the user on a fresh foyer. The handoff is cleared
+		// only on save-success — cancelling the modal preserves the
+		// payload so a re-visit recovers it.
+		const handoff = peekDocHandoff();
+		if (!handoff || handoff.kind !== 'contract') return;
+		handoffConsumed = true;
+		applyDocContractExtraction(handoff.extraction, handoff.doc_title);
+	});
+
+	/** Reject calendar-invalid ISO dates (e.g. 2026-02-30 silently
+	 *  normalizes to 2026-03-02 via the Date constructor). */
+	function isValidIsoDate(s: string): boolean {
+		if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+		const d = new Date(s);
+		if (Number.isNaN(d.getTime())) return false;
+		return d.toISOString().slice(0, 10) === s;
+	}
+
+	function matchCategoryId(hint: string | undefined): string {
+		if (!hint) return '';
+		const needle = hint.toLocaleLowerCase('fr').trim();
+		if (!needle) return '';
+		const exact = categories.find(
+			(c) => c.name.toLocaleLowerCase('fr') === needle
+		);
+		if (exact) return exact.id;
+		const partial = categories.find(
+			(c) =>
+				c.name.toLocaleLowerCase('fr').includes(needle) ||
+				needle.includes(c.name.toLocaleLowerCase('fr'))
+		);
+		return partial?.id ?? '';
+	}
+
+	function applyDocContractExtraction(
+		ext: ContractExtraction,
+		docTitle: string
+	) {
+		resetForm();
+		if (ext.provider) {
+			mName = ext.provider;
+			mSocietyName = ext.provider;
+		}
+		const catID = matchCategoryId(ext.contract_type);
+		if (catID) mCategoryId = catID;
+		if (ext.start_date && isValidIsoDate(ext.start_date)) {
+			mStartDate = ext.start_date;
+		}
+		if (ext.end_date && isValidIsoDate(ext.end_date)) {
+			mEndDate = ext.end_date;
+		}
+		// If the model swapped start/end dates, drop end so the user
+		// sees a clean form instead of a server-side validation error
+		// on submit.
+		if (mStartDate && mEndDate && mEndDate < mStartDate) {
+			mEndDate = '';
+		}
+		if (
+			typeof ext.monthly_amount_eur === 'number' &&
+			Number.isFinite(ext.monthly_amount_eur)
+		) {
+			mAmountEUR = ext.monthly_amount_eur.toFixed(2);
+			mFrequency = 'monthly';
+		}
+		if (ext.contract_number) {
+			mNote = `N° contrat : ${ext.contract_number}`;
+		}
+		docHandoffNotice = `Pré-rempli depuis le document « ${docTitle} ». Vérifie les valeurs avant d'enregistrer.`;
+		modalOpen = true;
+	}
+
 	function openEdit(c: Contract) {
 		resetForm();
 		editingId = c.id;
@@ -321,6 +406,9 @@
 				await createContract(payload);
 			}
 			modalOpen = false;
+			// Clear any pending doc-handoff now that the create succeeded.
+			// No-op when no handoff was active.
+			clearDocHandoff();
 			setTimeout(resetForm, 220);
 		} catch (err) {
 			formError = err instanceof ApiError ? `${err.code}: ${err.message}` : String(err);
@@ -776,6 +864,10 @@
 						<p class="form-error" role="alert">{formError}</p>
 					{/if}
 
+					{#if docHandoffNotice}
+						<p class="form-notice" role="status">{docHandoffNotice}</p>
+					{/if}
+
 					<div class="modal-actions">
 						<Button variant="ghost" onclick={closeModal} disabled={saving}>Annuler</Button>
 						<Button type="submit" variant="primary" mark disabled={saving}>
@@ -1162,6 +1254,15 @@
 		color: var(--danger);
 		font-size: 0.85rem;
 		margin: 0;
+	}
+	.form-notice {
+		margin: 0;
+		color: var(--ink-2);
+		font-size: 0.8rem;
+		background: var(--surface-2);
+		border-left: 3px solid var(--accent);
+		padding: 0.5rem 0.75rem;
+		border-radius: 0.4rem;
 	}
 	.modal-actions {
 		display: flex;

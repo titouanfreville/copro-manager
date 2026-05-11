@@ -54,14 +54,16 @@ type Client struct {
 // `usage` is required when cfg.Enabled is true so the cap is
 // enforceable; pass nil to short-circuit gating in tests.
 func NewClient(cfg Config, usage interfaces.AIUsageStore) (*Client, error) {
+	// Default the model regardless of Enabled so test paths that flip
+	// Enabled on the returned struct still see a usable Model string.
+	if cfg.Model == "" {
+		cfg.Model = DefaultModel
+	}
 	if !cfg.Enabled {
 		return &Client{cfg: cfg, usage: usage}, nil
 	}
 	if cfg.ProjectID == "" || cfg.Region == "" {
 		return nil, fmt.Errorf("gemini: project_id and region are required when enabled")
-	}
-	if cfg.Model == "" {
-		cfg.Model = DefaultModel
 	}
 	c, err := genai.NewClient(context.Background(), &genai.ClientConfig{
 		Backend:  genai.BackendVertexAI,

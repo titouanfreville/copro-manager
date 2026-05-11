@@ -114,6 +114,24 @@ export async function getDocumentDownloadUrl(
   return { url: res.download_url, expiresAt: res.expires_at };
 }
 
+/**
+ * Trigger Gemini classification + extraction on a previously uploaded
+ * document. Result is cached on the server-side Document; pass
+ * `force: true` to bypass the cache (e.g. after a prompt iteration).
+ * Returns the enriched Document so the caller can read `.analysis`
+ * directly without re-fetching.
+ */
+export function analyzeDocument(
+  id: string,
+  opts: { force?: boolean } = {},
+): Promise<Document> {
+  const qs = opts.force ? "?force=true" : "";
+  return api<Document>(
+    `/documents/${encodeURIComponent(id)}/analyze${qs}`,
+    { method: "POST" },
+  );
+}
+
 // PUT a Blob to a signed GCS URL with optional progress reporting + abort
 // support. Mirrors the helper in $lib/expenses but kept local to avoid a
 // cross-module import for what is effectively the same primitive.

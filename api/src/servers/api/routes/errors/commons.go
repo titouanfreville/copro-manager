@@ -28,6 +28,11 @@ func ManageErrors(err error) (int, ServErrors) {
 		return http.StatusServiceUnavailable, NewServErrors("FEATURE_DISABLED", "feature désactivée")
 	case errors.Is(err, domainerrors.ErrFeatureCapped):
 		return http.StatusTooManyRequests, NewServErrors("FEATURE_CAPPED", "quota mensuel atteint, réessaie le mois prochain")
+	case errors.Is(err, domainerrors.ErrAnalysisFailed):
+		// Soft failure — the UI keeps the "Analyser" affordance and the
+		// user can retry. Distinct from FEATURE_DISABLED (config) and
+		// FEATURE_CAPPED (budget).
+		return http.StatusUnprocessableEntity, NewServErrors("ANALYSIS_FAILED", "analyse impossible, réessaie")
 	default:
 		return http.StatusInternalServerError, NewServErrors("INTERNAL_ERROR", "internal server error")
 	}
